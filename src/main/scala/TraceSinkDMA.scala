@@ -47,6 +47,8 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
     val collect_counter = RegInit(0.U(4.W))
     val msg_buffer = RegInit(VecInit(Seq.fill(busWidth / 8)(0.U(8.W))))
 
+    val max_inflight_counter = RegInit(16.U(16.W))
+
     val dma_start_addr = RegInit(0.U(64.W))
     val dma_addr_write_valid = Wire(Bool())
 
@@ -59,7 +61,7 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
     
     val inflight_counter = RegInit(0.U(4.W))
 
-    mem.a.valid := mstate === mWrite && inflight_counter < 16.U
+    mem.a.valid := mstate === mWrite && inflight_counter < max_inflight_counter
     mem.d.ready := true.B
     fifo.io.deq.ready := false.B // default case 
     dontTouch(mem.d.valid)
@@ -131,7 +133,9 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
         ),
         0x10 -> Seq(RegField(64, addr_counter,
             RegFieldDesc("addr_counter", "Address counter"))
-        )
+        ),
+        0x18 -> Seq(RegField(16, max_inflight_counter, 
+          RegFieldDesc("max_inflight_counter", "Max inflight counter")))
       ):_*
     )
   }
@@ -175,11 +179,11 @@ case object TraceSinkDMAInjector extends SubsystemInjector((p, baseSubsystem) =>
     case _ => Nil
   }}.flatten
   if (traceSinkDMAs.nonEmpty) {
-    val sbus = baseSubsystem.locateTLBusWrapper(SBUS)
+    val mbus = baseSubsystem.locateTLBusWrapper(MBUS)
     traceSinkDMAs.foreach { case (t, s) =>
       t { // in the implicit clock domain of tile
-        sbus.coupleFrom(t.tileParams.baseName) { bus =>
-          bus := sbus.crossOut(s.node)(ValName("trace_sink_dma"))(AsynchronousCrossing())
+        mbus.coupleFrom(t.tileParams.baseName) { bus =>
+          bus := mbus.crossOut(s.node)(ValName("trace_sink_dma"))(AsynchronousCrossing())
         }
         t.connectTLSlave(s.regnode, t.xBytes)
       }
