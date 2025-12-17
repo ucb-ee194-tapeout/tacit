@@ -40,7 +40,8 @@ class MultiPortedRegQueue[T <: Data](
     Cat(in(n-k-1,0), in(n-1, n-k))
   }
 
-  val might_hit_head = (1 until numInputs+1).map(k => rotateLeft(tail, k) & head).reduce(_|_).orR
+  // explicitly excluding the tail case, as the final element hitting head is ok
+  val might_hit_head = (1 until numInputs).map(k => rotateLeft(tail, k) & head).reduce(_|_).orR
   // is the tail at the head?
   val at_head = (tail & head).orR
 
