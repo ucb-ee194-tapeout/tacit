@@ -78,19 +78,18 @@ trait MetaDataWidthHelper {
 }
 
 class MetaDataBundle(val coreParams: TraceCoreParams) extends Bundle with MetaDataWidthHelper {
-  val prv = UInt(1.W)
-  val ctx = UInt(ctxMaxNumBytes.W)
-  val target_addr = UInt(addrMaxNumBytes.W)
-  val trap_addr = UInt(addrMaxNumBytes.W)
-  val time = UInt(timeMaxNumBytes.W)
-  val is_compressed = UInt(1.W)
+  val time = UInt(timeMaxNumBytes.W) // 10
+  val target_addr = UInt(addrMaxNumBytes.W) // 6
+  val trap_addr = UInt(addrMaxNumBytes.W) // 6
+  val ctx = UInt(ctxMaxNumBytes.W) // 3
+  val prv = UInt(1.W) // 1
+  val is_compressed = UInt(1.W) // 1
 }
 
 class MessagePacketBundle(val coreParams: TraceCoreParams) extends Bundle with MetaDataWidthHelper {
-  val prv = UInt(8.W)
-  val ctx = Vec(ctxMaxNumBytes, UInt(8.W))
+  val time = Vec(timeMaxNumBytes, UInt(8.W))
   val target_addr = Vec(addrMaxNumBytes, UInt(8.W))
   val trap_addr = Vec(addrMaxNumBytes, UInt(8.W))
-  val time = Vec(timeMaxNumBytes, UInt(8.W))
-  val header = UInt(8.W)
+  val ctx = Vec(ctxMaxNumBytes, UInt(8.W))
+  val prv = UInt(8.W)
 }

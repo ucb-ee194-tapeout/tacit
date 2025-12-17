@@ -35,26 +35,42 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
   val enabled = RegInit(false.B)
   val encode_sync = Wire(Bool())
   val prev_time = Reg(UInt(coreParams.xlen.W))
-  val delta_time = ingress_1.time - prev_time
 
   // pipeline of ingress data
   val ingress_0 = RegInit(0.U.asTypeOf(new TraceCoreInterface(coreParams)))
   val ingress_1 = RegInit(0.U.asTypeOf(new TraceCoreInterface(coreParams)))
 
+  val delta_time = ingress_1.time - prev_time
+
   val pipeline_advance = Wire(Bool())
-  pipeline_advance := ingress_0.group(0).iretire === 1.U
+  pipeline_advance := io.in.group.map(_.iretire === 1.U).reduce(_ || _) // at least 1 valid ingress
   when (pipeline_advance) {
     ingress_0 := ingress_1
     ingress_1 := io.in
   }
 
+  val time_encoder = Module(new VarLenMaskEncoder(coreParams.xlen))
+  
   // buffers
   val metadata_buffer = Module(new MultiPortedRegQueue(new MetaDataBundle(coreParams), outer.bufferDepth, coreParams.nGroups))
   val message_packet_buffer = Module(new MultiPortedRegQueue(new MessagePacketBundle(coreParams), outer.bufferDepth, coreParams.nGroups))
-  val compressed_header_buffer = Module(new MultiPortedRegQueue(UInt(8.W), outer.bufferDepth, coreParams.nGroups))
+  val header_buffer = Module(new MultiPortedRegQueue(UInt(8.W), outer.bufferDepth, coreParams.nGroups))
+
+  val trace_packetizer = Module(new TraceMaskedPacketizer(coreParams))
+  trace_packetizer.io.message <> message_packet_buffer.io.deq
+  trace_packetizer.io.metadata <> metadata_buffer.io.deq
+  trace_packetizer.io.byte <> header_buffer.io.deq
+  io.out <> trace_packetizer.io.out
+
+  val sent = RegInit(false.B)
+  // reset takes priority over enqueue
+  when (pipeline_advance) {
+    sent := false.B
+  } .elsewhen (metadata_buffer.io.enqs.map(_.fire).reduce(_ || _)) {
+    sent := true.B
+  }
 
   // itermediate signals
-
   val metadata_enq_bits = Wire(Vec(coreParams.nGroups, new MetaDataBundle(coreParams)))
   val message_packet_enq_bits = Wire(Vec(coreParams.nGroups, new MessagePacketBundle(coreParams)))
 
@@ -76,12 +92,19 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
     metadata_enq_bits(i) := message_encoder.io.metadata
     metadata_enq_bits(i).time := Mux(is_first_valid(i), time_encoder.io.output_mask, 0.U)
     val time_can_be_compressed = Mux(is_first_valid(i), delta_time < MAX_DELTA_TIME_COMP.U, true.B)
-    metadata_enq_bits(i).is_compressed := message_encoder.io.possible_to_compress && time_can_be_compressed
-    metadata_buffer.io.enqs(i).valid := message_encoder.io.packet_valid
+    val is_compressed = message_encoder.io.possible_to_compress && time_can_be_compressed
+    metadata_enq_bits(i).is_compressed := is_compressed
+    metadata_buffer.io.enqs(i).bits := metadata_enq_bits(i)
+    metadata_buffer.io.enqs(i).valid := message_encoder.io.packet_valid && !sent
 
     message_packet_enq_bits(i) := message_encoder.io.message
-    message_packet_enq_bits(i).time := Mux(is_first_valid(i), time_encoder.io.output_bytes, 0.U)
-    message_packet_buffer.io.enqs(i).valid := message_encoder.io.packet_valid
+    message_packet_enq_bits(i).time := Mux(is_first_valid(i), time_encoder.io.output_bytes, VecInit.fill(time_encoder.maxNumBytes)(0.U(8.W)))
+    message_packet_buffer.io.enqs(i).bits := message_packet_enq_bits(i)
+    message_packet_buffer.io.enqs(i).valid := message_encoder.io.packet_valid && !is_compressed && !sent
+
+    val compressed_packet = Cat(delta_time(5,0), message_encoder.io.comp_header)
+    header_buffer.io.enqs(i).bits := Mux(is_compressed, compressed_packet, message_encoder.io.full_header)
+    header_buffer.io.enqs(i).valid := message_encoder.io.packet_valid && !sent
   }
 
   for (i <- 0 until coreParams.nGroups) {
@@ -93,10 +116,10 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
   val do_enq = metadata_buffer.io.enqs.map(_.fire).reduce(_ || _)
   when (do_enq) { prev_time := ingress_1.time }
 
-  val time_encoder = Module(new VarLenMaskEncoder(coreParams.xlen))
-
   // default values
   encode_sync := false.B
+  time_encoder.io.input_valid := false.B
+  time_encoder.io.input_value := DontCare
   
   switch (state) {
     is (sIdle) {
@@ -115,12 +138,15 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
         state := sSync
         sync_type := SyncType.SyncEnd
       } .otherwise {
-        // TODO: add data logic
+        time_encoder.io.input_value := delta_time
+        prev_time := ingress_1.time
       }
     }
   }
 
-  io.stall := metadata_buffer.io.enqs.map(_.ready).reduce(_||_)
+  io.stall := metadata_buffer.io.stall_enq || 
+              message_packet_buffer.io.stall_enq ||
+              header_buffer.io.stall_enq
 }
 
 class MessageEncoder(
@@ -137,6 +163,7 @@ class MessageEncoder(
     val metadata = Output(new MetaDataBundle(coreParams))
     val message = Output(new MessagePacketBundle(coreParams)) 
     val comp_header = Output(UInt(CompressedHeaderType.getWidth.W))
+    val full_header = Output(UInt(8.W))
     val packet_valid = Output(Bool())
     val possible_to_compress = Output(Bool())
   })
@@ -146,7 +173,7 @@ class MessageEncoder(
   // intermediate packet signals
   val possible_to_compress = Wire(Bool())
   val header_byte   = Wire(UInt(8.W)) // full header
-  io.message.header := header_byte
+  io.full_header := header_byte
 
   val comp_header = Wire(UInt(CompressedHeaderType.getWidth.W)) // compressed header
   io.comp_header := comp_header
@@ -186,7 +213,6 @@ class MessageEncoder(
   message.trap_addr := trap_addr_encoder.io.output_bytes
   message.target_addr := target_addr_encoder.io.output_bytes
   message.time := DontCare
-  message.header := header_byte
   io.message := message
 
   // do we have a message to encode?

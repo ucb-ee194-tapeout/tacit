@@ -20,6 +20,7 @@ class MultiPortedRegQueue[T <: Data](
   val io = IO(new Bundle {
     val enqs = Flipped(Vec(numInputs, Decoupled(gen)))
     val deq = Decoupled(gen)
+    val stall_enq = Output(Bool())
   })
 
   requireIsChiselType(gen)
@@ -47,6 +48,7 @@ class MultiPortedRegQueue[T <: Data](
 
   val do_enq = !(at_head && maybe_full || might_hit_head)
   io.enqs.map(_.ready := do_enq)
+  io.stall_enq := !do_enq
 
   // Generate one-hot write indices
   val enq_idxs = Wire(Vec(numInputs, UInt(numEntries.W)))

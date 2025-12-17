@@ -137,11 +137,87 @@ class TracePacketizer(val coreParams: TraceCoreParams) extends Module with MetaD
   }
 }
 
-// class TraceWidePacketizer(val coreParams: TraceCoreParams) extends Module with MetaDataWidthHelper {
-//   val io = IO(new Bundle {
-//     val message = Flipped(Decoupled(new MessagePacketBundle(coreParams)))
-//     val compressed_message = Flipped(Decoupled(new CompressedMessagePacketBundle(coreParams)))
-//     val metadata = Flipped(Decoupled(new MetaDataBundle(coreParams)))
-//     val out = Decoupled(UInt(8.W))
-//   })
-// }
+class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with MetaDataWidthHelper {
+  val io = IO(new Bundle {
+    val message = Flipped(Decoupled(new MessagePacketBundle(coreParams)))
+    val byte = Flipped(Decoupled(UInt(8.W)))
+    val metadata = Flipped(Decoupled(new MetaDataBundle(coreParams)))
+    val out = Decoupled(UInt(8.W)) // FIXME: can we do better?
+  })
+
+  val pIdle :: pComp :: pFull :: Nil = Enum(3)
+  val state = RegInit(pIdle)
+
+  val metadata_reg = Reg(new MetaDataBundle(coreParams))
+
+  io.out.valid := false.B
+  io.metadata.ready := false.B
+  io.message.ready := false.B
+  io.byte.ready := false.B
+  io.out.bits := 0.U
+
+  def inRange(n: UInt, upper: Int, lower: Int): Bool = {
+    n >= lower.U && n < upper.U
+  }
+
+  def prep_next_state(): Unit = {
+    io.metadata.ready := true.B
+    state := Mux(io.metadata.fire, 
+      Mux(io.metadata.bits.is_compressed.asBool, pComp, pFull),
+      pIdle
+    )
+  }
+
+  io.byte.ready := false.B
+  io.message.ready := false.B
+  io.metadata.ready := false.B
+  io.out.valid := false.B
+  io.out.bits := DontCare
+
+  switch (state) {
+    is (pIdle) {
+      io.metadata.ready := true.B
+      when (io.metadata.fire) {
+        metadata_reg := io.metadata.bits
+        state := Mux(io.metadata.bits.is_compressed.asBool, pComp, pFull)
+      }
+    }
+    is (pComp) {
+      io.byte.ready := io.out.ready
+      io.out.valid := io.byte.valid
+      io.out.bits := io.byte.bits
+      when (io.byte.fire) {
+        io.metadata.ready := true.B
+        state := pFull
+        prep_next_state()
+      }
+    }
+    is (pFull) {
+      io.out.valid := true.B
+      io.message.ready := true.B
+      when (metadata_reg.asUInt =/= 0.U) {
+        val idx = PriorityEncoder(metadata_reg.asUInt)
+        when (idx.asUInt === 0.U) {
+          io.out.bits := io.byte.bits
+        } .elsewhen (inRange(idx, 1+1, 1)) {
+          io.out.bits := io.message.bits.prv
+        } .elsewhen (inRange(idx, 2+ctxMaxNumBytes, 2)) {
+          io.out.bits := io.message.bits.ctx(idx - 2.U)
+        } .elsewhen (inRange(idx, 2+ctxMaxNumBytes+addrMaxNumBytes, 2+ctxMaxNumBytes)) {
+          io.out.bits := io.message.bits.trap_addr(idx - 2.U - ctxMaxNumBytes.U)
+        } .elsewhen (inRange(idx, 2+ctxMaxNumBytes+addrMaxNumBytes+addrMaxNumBytes, 2+ctxMaxNumBytes+addrMaxNumBytes)) {
+          io.out.bits := io.message.bits.target_addr(idx - 2.U - ctxMaxNumBytes.U - addrMaxNumBytes.U)
+        } .elsewhen (inRange(idx, 2+ctxMaxNumBytes+addrMaxNumBytes+addrMaxNumBytes+timeMaxNumBytes, 2+ctxMaxNumBytes+addrMaxNumBytes+addrMaxNumBytes)) {
+          io.out.bits := io.message.bits.time(idx - 2.U - ctxMaxNumBytes.U - addrMaxNumBytes.U - addrMaxNumBytes.U)
+        } .otherwise {
+          io.out.bits := 0.U
+        }
+      } .otherwise {
+        io.byte.ready := true.B // dequeue the header byte
+        io.message.ready := true.B // dequeue the message
+        prep_next_state()
+      }
+    }
+  }
+
+}
