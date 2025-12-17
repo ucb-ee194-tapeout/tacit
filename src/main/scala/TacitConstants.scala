@@ -92,4 +92,5 @@ class MessagePacketBundle(val coreParams: TraceCoreParams) extends Bundle with M
   val target_addr = Vec(addrMaxNumBytes, UInt(8.W))
   val trap_addr = Vec(addrMaxNumBytes, UInt(8.W))
   val time = Vec(timeMaxNumBytes, UInt(8.W))
+  val header = UInt(8.W)
 }

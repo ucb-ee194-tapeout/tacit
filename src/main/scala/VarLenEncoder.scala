@@ -41,6 +41,32 @@ class VarLenEncoder(val maxWidth: Int) extends Module {
   }
 }
 
+class VarLenMaskEncoder(val maxWidth: Int) extends Module {
+  val maxNumBytes = maxWidth/(8-1) + 1
+  
+  val io = IO(new Bundle {
+    val input_value = Input(UInt(maxWidth.W))
+    val input_valid = Input(Bool())
+    val output_mask = Output(UInt(maxNumBytes.W))
+    val output_bytes = Output(Vec(maxNumBytes, UInt(8.W)))
+  })
+
+  // 0-indexed MSB index 
+  val msb_index = (maxWidth - 1).U - PriorityEncoder(Reverse(io.input_value))
+  
+  // Check each possible byte count range
+  for (i <- 0 until maxNumBytes) {
+    val range_start = i * 7
+    when (msb_index >= range_start.U && io.input_valid) {
+      io.output_mask(i) := true.B
+    }
+  }
+  
+  for (i <- 0 until maxNumBytes) {
+    io.output_bytes(i) := io.input_value(min(i*7+6, maxWidth-1), i*7) | Mux(io.output_mask(i), 0x80.U, 0.U)
+  }
+}
+
 // Processor privilege level encoder
 class PrvEncoder extends Module {
   val io = IO(new Bundle {

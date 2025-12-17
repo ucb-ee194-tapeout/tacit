@@ -136,3 +136,12 @@ class TracePacketizer(val coreParams: TraceCoreParams) extends Module with MetaD
     }
   }
 }
+
+// class TraceWidePacketizer(val coreParams: TraceCoreParams) extends Module with MetaDataWidthHelper {
+//   val io = IO(new Bundle {
+//     val message = Flipped(Decoupled(new MessagePacketBundle(coreParams)))
+//     val compressed_message = Flipped(Decoupled(new CompressedMessagePacketBundle(coreParams)))
+//     val metadata = Flipped(Decoupled(new MetaDataBundle(coreParams)))
+//     val out = Decoupled(UInt(8.W))
+//   })
+// }
