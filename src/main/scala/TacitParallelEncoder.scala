@@ -87,7 +87,7 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
     message_encoder.io.ingress := ingress_1 // pass in all groups, irrelevant ones will be optimized out
     message_encoder.io.ingress_0_target_addr_msg := ingress_0.group(0).iaddr // backup in case this is the last valid ingress
     message_encoder.io.target_prv_msg := ingress_0.priv
-    message_encoder.io.ingress_valid := ingress_1.group(i).iretire === 1.U
+    message_encoder.io.ingress_valid := ingress_1.group(i).iretire === 1.U && (if (i==0) (state === sData || state === sSync) else (state === sData))
 
     metadata_enq_bits(i) := message_encoder.io.metadata
     metadata_enq_bits(i).time := Mux(is_first_valid(i), time_encoder.io.output_mask, 0.U)
