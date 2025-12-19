@@ -32,7 +32,6 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
   val sIdle :: sStall :: sSync :: sData :: Nil = Enum(4)
   val state = RegInit(sIdle)
   val sync_type = RegInit(SyncType.SyncNone)
-  val enabled = RegInit(false.B)
   val encode_sync = Wire(Bool())
   val prev_time = Reg(UInt(coreParams.xlen.W))
 
@@ -123,7 +122,7 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
   
   switch (state) {
     is (sIdle) {
-      when (enabled) {
+      when (io.control.enable) {
         state := sSync
         sync_type := SyncType.SyncStart
       }

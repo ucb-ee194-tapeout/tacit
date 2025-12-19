@@ -149,6 +149,7 @@ class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with
   val state = RegInit(pIdle)
 
   val metadata_reg = Reg(new MetaDataBundle(coreParams))
+  val metadata_mask_reg = Reg(UInt(metaDataBundleWidth.W))
 
   io.out.valid := false.B
   io.metadata.ready := false.B
@@ -179,6 +180,7 @@ class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with
       io.metadata.ready := true.B
       when (io.metadata.fire) {
         metadata_reg := io.metadata.bits
+        metadata_mask_reg := io.metadata.bits.asUInt
         state := Mux(io.metadata.bits.is_compressed.asBool, pComp, pFull)
       }
     }
@@ -195,8 +197,9 @@ class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with
     is (pFull) {
       io.out.valid := true.B
       io.message.ready := true.B
-      when (metadata_reg.asUInt =/= 0.U) {
-        val idx = PriorityEncoder(metadata_reg.asUInt)
+      when (metadata_mask_reg =/= 0.U) {
+        val idx = PriorityEncoder(metadata_mask_reg)
+        val next_metadata = metadata_mask_reg & ~(1.U << idx)
         when (idx.asUInt === 0.U) {
           io.out.bits := io.byte.bits
         } .elsewhen (inRange(idx, 1+1, 1)) {
@@ -210,8 +213,10 @@ class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with
         } .elsewhen (inRange(idx, 2+ctxMaxNumBytes+addrMaxNumBytes+addrMaxNumBytes+timeMaxNumBytes, 2+ctxMaxNumBytes+addrMaxNumBytes+addrMaxNumBytes)) {
           io.out.bits := io.message.bits.time(idx - 2.U - ctxMaxNumBytes.U - addrMaxNumBytes.U - addrMaxNumBytes.U)
         } .otherwise {
+          assert(false.B, "why are we here?")
           io.out.bits := 0.U
         }
+        metadata_mask_reg := Mux(io.out.fire, next_metadata, metadata_mask_reg)
       } .otherwise {
         io.byte.ready := true.B // dequeue the header byte
         io.message.ready := true.B // dequeue the message

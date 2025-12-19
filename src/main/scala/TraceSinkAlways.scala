@@ -16,6 +16,8 @@ class TraceSinkAlways()(implicit p: Parameters) extends LazyTraceSink {
   override lazy val module = new TraceSinkAlwaysImpl(this)
   class TraceSinkAlwaysImpl(outer: TraceSinkAlways) extends LazyTraceSinkModuleImp(outer) {
     io.trace_in.ready := true.B
+    // Prevent FIRRTL DCE from removing this sink
+    dontTouch(io.trace_in)
   }
 }
 

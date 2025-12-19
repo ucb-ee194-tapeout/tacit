@@ -75,6 +75,7 @@ trait MetaDataWidthHelper {
   lazy val addrMaxNumBytes = getMaxNumBytes(coreParams.iaddrWidth)
   lazy val timeMaxNumBytes = getMaxNumBytes(coreParams.xlen)
   lazy val ctxMaxNumBytes = getMaxNumBytes(maxASIdBits)
+  def metaDataBundleWidth = timeMaxNumBytes + 2*addrMaxNumBytes + ctxMaxNumBytes + 2
 }
 
 class MetaDataBundle(val coreParams: TraceCoreParams) extends Bundle with MetaDataWidthHelper {
