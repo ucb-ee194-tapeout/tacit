@@ -113,7 +113,7 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
   metadata.trap_addr := trap_addr_encoder.io.output_num_bytes
   metadata.target_addr := target_addr_encoder.io.output_num_bytes
   metadata.time := time_encoder.io.output_num_bytes
-  metadata.is_compressed := is_compressed
+  metadata.is_full := ~is_compressed
 
   metadata_buffer.io.enq.bits := metadata
   metadata_buffer.io.enq.valid := packet_valid

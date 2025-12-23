@@ -84,7 +84,7 @@ class MetaDataBundle(val coreParams: TraceCoreParams) extends Bundle with MetaDa
   val trap_addr = UInt(addrMaxNumBytes.W) // 6
   val ctx = UInt(ctxMaxNumBytes.W) // 3
   val prv = UInt(1.W) // 1
-  val is_compressed = UInt(1.W) // 1
+  val is_full = UInt(1.W) // 1
 }
 
 class MessagePacketBundle(val coreParams: TraceCoreParams) extends Bundle with MetaDataWidthHelper {

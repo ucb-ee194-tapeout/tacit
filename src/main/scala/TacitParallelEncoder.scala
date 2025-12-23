@@ -39,13 +39,25 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
   val ingress_0 = RegInit(0.U.asTypeOf(new TraceCoreInterface(coreParams)))
   val ingress_1 = RegInit(0.U.asTypeOf(new TraceCoreInterface(coreParams)))
 
+  val lane_compactor = Module(new LaneCompactor(new TraceCoreGroup(coreParams), coreParams.nGroups))
+  lane_compactor.io.input_mask := io.in.group.map(_.iretire === 1.U)
+  lane_compactor.io.input_data := io.in.group
+  val compacted_ingress_group = lane_compactor.io.output_data
+  val compacted_ingress = Wire(new TraceCoreInterface(coreParams))
+  compacted_ingress.group := compacted_ingress_group
+  compacted_ingress.priv := io.in.priv
+  compacted_ingress.ctx := io.in.ctx
+  compacted_ingress.tval := io.in.tval
+  compacted_ingress.cause := io.in.cause
+  compacted_ingress.time := io.in.time
+
   val delta_time = ingress_1.time - prev_time
 
   val pipeline_advance = Wire(Bool())
   pipeline_advance := io.in.group.map(_.iretire === 1.U).reduce(_ || _) // at least 1 valid ingress
   when (pipeline_advance) {
     ingress_0 := ingress_1
-    ingress_1 := io.in
+    ingress_1 := compacted_ingress
   }
 
   val time_encoder = Module(new VarLenMaskEncoder(coreParams.xlen))
@@ -82,7 +94,11 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
 
   for (i <- 0 until coreParams.nGroups) {
     val message_encoder = Module(new MessageEncoder(coreParams, canEncodeSyncMessage = i == 0, my_index = i))
-    if (i == 0) { message_encoder.io.encode_sync.get := encode_sync }
+    if (i == 0) { 
+      message_encoder.io.encode_sync.get := encode_sync 
+      message_encoder.io.sync_type.get := sync_type
+      message_encoder.io.sync_ingress.get := ingress_0 
+    }
     message_encoder.io.ingress := ingress_1 // pass in all groups, irrelevant ones will be optimized out
     message_encoder.io.ingress_0_target_addr_msg := ingress_0.group(0).iaddr // backup in case this is the last valid ingress
     message_encoder.io.target_prv_msg := ingress_0.priv
@@ -92,7 +108,7 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
     metadata_enq_bits(i).time := Mux(is_first_valid(i), time_encoder.io.output_mask, 0.U)
     val time_can_be_compressed = Mux(is_first_valid(i), delta_time < MAX_DELTA_TIME_COMP.U, true.B)
     val is_compressed = message_encoder.io.possible_to_compress && time_can_be_compressed
-    metadata_enq_bits(i).is_compressed := is_compressed
+    metadata_enq_bits(i).is_full := ~is_compressed
     metadata_buffer.io.enqs(i).bits := metadata_enq_bits(i)
     metadata_buffer.io.enqs(i).valid := message_encoder.io.packet_valid && !sent
 
@@ -116,7 +132,7 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
   when (do_enq) { prev_time := ingress_1.time }
 
   // default values
-  encode_sync := false.B
+  encode_sync := state === sSync
   time_encoder.io.input_valid := false.B
   time_encoder.io.input_value := DontCare
   
@@ -128,9 +144,10 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
       }
     }
     is (sSync) {
-      encode_sync := true.B
       time_encoder.io.input_value := ingress_0.time
+      time_encoder.io.input_valid := true.B
       prev_time := ingress_0.time
+      state := Mux(pipeline_advance && (sent || metadata_buffer.io.enqs.map(_.fire).reduce(_ || _)), Mux(io.control.enable, sData, sIdle), sSync)
     }
     is (sData) {
       when (!io.control.enable) {
@@ -138,6 +155,7 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
         sync_type := SyncType.SyncEnd
       } .otherwise {
         time_encoder.io.input_value := delta_time
+        time_encoder.io.input_valid := true.B
         prev_time := ingress_1.time
       }
     }
@@ -155,6 +173,8 @@ class MessageEncoder(
 ) extends Module with MetaDataWidthHelper {
   val io = IO(new Bundle {
     val encode_sync = if (canEncodeSyncMessage) Some(Input(Bool())) else None
+    val sync_ingress = if (canEncodeSyncMessage) Some(Input(new TraceCoreInterface(coreParams))) else None
+    val sync_type = if (canEncodeSyncMessage) Some(Input(SyncType())) else None
     val ingress = Input(new TraceCoreInterface(coreParams))
     val ingress_0_target_addr_msg = Input(UInt(coreParams.iaddrWidth.W))
     val target_prv_msg = Input(UInt(4.W))
@@ -201,7 +221,7 @@ class MessageEncoder(
   metadata.trap_addr := trap_addr_encoder.io.output_mask
   metadata.target_addr := target_addr_encoder.io.output_mask
   io.possible_to_compress := possible_to_compress 
-  metadata.is_compressed := DontCare  
+  metadata.is_full := ~possible_to_compress  
   metadata.time := DontCare
   io.metadata := metadata
 
@@ -247,18 +267,18 @@ class MessageEncoder(
   if (canEncodeSyncMessage) {
     when (io.encode_sync.get) {
       io.packet_valid := true.B
-      header_byte := HeaderByte(FullHeaderType.FSync)
-      target_addr_encoder.io.input_value := io.ingress.group(my_index).iaddr >> 1.U
+      header_byte := HeaderByte.from_sync_type(FullHeaderType.FSync, io.sync_type.get)
+      target_addr_encoder.io.input_value := io.sync_ingress.get.group(my_index).iaddr >> 1.U
       encode_target_addr_valid := true.B
       prv_encoder.io.from_priv := 0b00.U
-      prv_encoder.io.to_priv := io.ingress.priv
+      prv_encoder.io.to_priv := io.sync_ingress.get.priv
       encode_prv_valid := true.B
       // reuse trap address for runtime_cfg
       val runtime_cfg = 0.U(7.W)
       // 2 bits for bp mode, 6 bits for n_entries
       trap_addr_encoder.io.input_value := runtime_cfg
       encode_trap_addr_valid := true.B
-      ctx_encoder.io.input_value := io.ingress.ctx
+      ctx_encoder.io.input_value := io.sync_ingress.get.ctx
       encode_ctx_valid := true.B
       possible_to_compress := false.B
     }

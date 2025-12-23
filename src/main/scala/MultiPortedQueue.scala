@@ -58,7 +58,7 @@ class MultiPortedRegQueue[T <: Data](
     Cat(mask(n-2,0), mask(n-1))
   }
 
-  var enq_idx = tail
+  var enq_idx = tail // notice that this is mutable
   for (i <- 0 until numInputs) {
     enq_idxs(i) := enq_idx
     enq_idx = Mux(enq_mask(i), inc_mask(enq_idx), enq_idx)
@@ -171,7 +171,7 @@ class MultiPortedSRAMQueue[T <: Data](
     deq_bank_n(i).bits := DontCare
     when (io.enqs(i).fire) {
       // first, pack enqs - counting among inputs, what is my 0-indexed enq rank?
-      val enq_rank = PopCount(io.enqs.slice(0, i).map(_.fire)) - 1.U
+      val enq_rank = PopCount(io.enqs.slice(0, i).map(_.fire))
       // swizzle the enq to the correct bank
       val enq_bank_idx = (enq_bank + enq_rank) % numInputs.U
       enq_bank_n(enq_bank_idx).valid := io.enqs(i).fire

@@ -55,9 +55,9 @@ class TracePacketizer(val coreParams: TraceCoreParams) extends Module with MetaD
     prv_index := 0.U
     prv_num_bytes := Mux(io.metadata.fire, io.metadata.bits.prv, 0.U)
     header_index := 0.U
-    header_num_bytes := Mux(io.metadata.fire, ~io.metadata.bits.is_compressed, 0.U)
+    header_num_bytes := Mux(io.metadata.fire, io.metadata.bits.is_full, 0.U)
     state := Mux(io.metadata.fire, 
-      Mux(io.metadata.bits.is_compressed.asBool, pComp, pFull),
+      Mux(io.metadata.bits.is_full.asBool, pFull, pComp),
       pIdle
     )
   }
@@ -72,13 +72,13 @@ class TracePacketizer(val coreParams: TraceCoreParams) extends Module with MetaD
         target_addr_index := 0.U
         time_num_bytes := io.metadata.bits.time
         time_index := 0.U
-        header_num_bytes := ~io.metadata.bits.is_compressed
+        header_num_bytes := io.metadata.bits.is_full
         header_index := 0.U
         prv_num_bytes := io.metadata.bits.prv
         prv_index := 0.U
         ctx_num_bytes := io.metadata.bits.ctx
         ctx_index := 0.U
-        state := Mux(io.metadata.bits.is_compressed.asBool, pComp, pFull)
+        state := Mux(io.metadata.bits.is_full.asBool, pFull, pComp)
       }
     }
     is (pComp) {
@@ -164,7 +164,7 @@ class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with
   def prep_next_state(): Unit = {
     io.metadata.ready := true.B
     state := Mux(io.metadata.fire, 
-      Mux(io.metadata.bits.is_compressed.asBool, pComp, pFull),
+      Mux(io.metadata.bits.is_full.asBool, pFull, pComp),
       pIdle
     )
   }
@@ -181,7 +181,7 @@ class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with
       when (io.metadata.fire) {
         metadata_reg := io.metadata.bits
         metadata_mask_reg := io.metadata.bits.asUInt
-        state := Mux(io.metadata.bits.is_compressed.asBool, pComp, pFull)
+        state := Mux(io.metadata.bits.is_full.asBool, pFull, pComp)
       }
     }
     is (pComp) {
@@ -196,7 +196,6 @@ class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with
     }
     is (pFull) {
       io.out.valid := true.B
-      io.message.ready := true.B
       when (metadata_mask_reg =/= 0.U) {
         val idx = PriorityEncoder(metadata_mask_reg)
         val next_metadata = metadata_mask_reg & ~(1.U << idx)
@@ -218,6 +217,7 @@ class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with
         }
         metadata_mask_reg := Mux(io.out.fire, next_metadata, metadata_mask_reg)
       } .otherwise {
+        io.out.valid := false.B // FIXME: there's always a hiccup here?
         io.byte.ready := true.B // dequeue the header byte
         io.message.ready := true.B // dequeue the message
         prep_next_state()

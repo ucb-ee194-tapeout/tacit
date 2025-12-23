@@ -59,14 +59,20 @@ class VarLenMaskEncoder(val maxWidth: Int) extends Module {
   for (i <- 0 until maxNumBytes) {
     output_mask_vec(i) := false.B
     val range_start = i * 7
+    if (i == 0) {
+      when (msb_index === 0.U) {
+        output_mask_vec(i) := true.B
+      }
+    }
     when (msb_index > range_start.U && io.input_valid) {
       output_mask_vec(i) := true.B
     }
   }
-
   io.output_mask := Cat(output_mask_vec.reverse)
+  val last_byte_index = msb_index / 7.U
   for (i <- 0 until maxNumBytes) {
-    io.output_bytes(i) := io.input_value(min(i*7+6, maxWidth-1), i*7) | Mux(io.output_mask(i), 0x80.U, 0.U)
+    val is_last_byte = (i.U === last_byte_index)
+    io.output_bytes(i) := io.input_value(min(i*7+6, maxWidth-1), i*7) | Mux(is_last_byte, 0x80.U, 0.U)
   }
 }
 
