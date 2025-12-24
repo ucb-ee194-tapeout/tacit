@@ -174,13 +174,15 @@ class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with
   io.metadata.ready := false.B
   io.out.valid := false.B
   io.out.bits := DontCare
+  when (io.metadata.fire) {
+    metadata_reg := io.metadata.bits
+    metadata_mask_reg := io.metadata.bits.asUInt
+  }
 
   switch (state) {
     is (pIdle) {
       io.metadata.ready := true.B
       when (io.metadata.fire) {
-        metadata_reg := io.metadata.bits
-        metadata_mask_reg := io.metadata.bits.asUInt
         state := Mux(io.metadata.bits.is_full.asBool, pFull, pComp)
       }
     }
@@ -190,7 +192,6 @@ class TraceMaskedPacketizer(val coreParams: TraceCoreParams) extends Module with
       io.out.bits := io.byte.bits
       when (io.byte.fire) {
         io.metadata.ready := true.B
-        state := pFull
         prep_next_state()
       }
     }

@@ -247,7 +247,7 @@ class MessageEncoder(
   }
   val xored_addr = (target_addr_msg ^ io.ingress.group(my_index).iaddr) >> 1.U
   
-  val ingress_has_message = io.ingress.group(my_index).itype =/= TraceItype.ITNothing && ingress_is_last_valid
+  val ingress_has_message = io.ingress.group(my_index).itype =/= TraceItype.ITNothing
 
   io.packet_valid := io.ingress_valid && ingress_has_message
 
@@ -291,7 +291,7 @@ class MessageEncoder(
     }
     is (TraceItype.ITBrNTaken) {
       header_byte := HeaderByte(FullHeaderType.FNotTakenBranch)
-      comp_header := CompressedHeaderType.CTB.asUInt
+      comp_header := CompressedHeaderType.CNT.asUInt
     }
     is (TraceItype.ITInJump) {
       header_byte := HeaderByte(FullHeaderType.FInfJump)
@@ -299,7 +299,7 @@ class MessageEncoder(
     }
     is (TraceItype.ITUnJump) {
       header_byte := HeaderByte(FullHeaderType.FUninfJump)
-      comp_header := CompressedHeaderType.CIJ.asUInt
+      comp_header := CompressedHeaderType.CNA.asUInt
       target_addr_encoder.io.input_value := xored_addr
       encode_target_addr_valid := true.B
       possible_to_compress := false.B
