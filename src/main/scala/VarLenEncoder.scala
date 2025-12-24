@@ -61,7 +61,7 @@ class VarLenMaskEncoder(val maxWidth: Int) extends Module {
     val range_start = i * 7
     if (i == 0) {
       when (msb_index === 0.U) {
-        output_mask_vec(i) := true.B
+        output_mask_vec(i) := io.input_valid
       }
     }
     when (msb_index > range_start.U && io.input_valid) {

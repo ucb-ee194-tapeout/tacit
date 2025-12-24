@@ -56,8 +56,8 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
   val pipeline_advance = Wire(Bool())
   pipeline_advance := io.in.group.map(_.iretire === 1.U).reduce(_ || _) // at least 1 valid ingress
   when (pipeline_advance) {
-    ingress_0 := ingress_1
-    ingress_1 := compacted_ingress
+    ingress_0 := compacted_ingress
+    ingress_1 := ingress_0
   }
 
   val time_encoder = Module(new VarLenMaskEncoder(coreParams.xlen))
@@ -243,8 +243,9 @@ class MessageEncoder(
   if (my_index_is_last) {
     target_addr_msg := io.ingress_0_target_addr_msg
   } else {
-    target_addr_msg := Mux(ingress_is_last_valid, io.ingress_0_target_addr_msg, io.ingress.group(my_index+1).iaddr >> 1.U)
+    target_addr_msg := Mux(ingress_is_last_valid, io.ingress_0_target_addr_msg, io.ingress.group(my_index+1).iaddr)
   }
+  val xored_addr = (target_addr_msg ^ io.ingress.group(my_index).iaddr) >> 1.U
   
   val ingress_has_message = io.ingress.group(my_index).itype =/= TraceItype.ITNothing && ingress_is_last_valid
 
@@ -299,12 +300,14 @@ class MessageEncoder(
     is (TraceItype.ITUnJump) {
       header_byte := HeaderByte(FullHeaderType.FUninfJump)
       comp_header := CompressedHeaderType.CIJ.asUInt
+      target_addr_encoder.io.input_value := xored_addr
+      encode_target_addr_valid := true.B
       possible_to_compress := false.B
     }
     is (TraceItype.ITException) {
       header_byte := HeaderByte.from_trap_type(FullHeaderType.FTrap, TrapType.TException)
       comp_header := CompressedHeaderType.CNA.asUInt
-      target_addr_encoder.io.input_value := target_addr_msg
+      target_addr_encoder.io.input_value := xored_addr
       encode_target_addr_valid := true.B
       trap_addr_encoder.io.input_value := io.ingress.group(my_index).iaddr >> 1.U
       encode_trap_addr_valid := true.B
@@ -316,7 +319,7 @@ class MessageEncoder(
     is (TraceItype.ITInterrupt) {
       header_byte := HeaderByte.from_trap_type(FullHeaderType.FTrap, TrapType.TInterrupt)
       comp_header := CompressedHeaderType.CNA.asUInt
-      target_addr_encoder.io.input_value := target_addr_msg
+      target_addr_encoder.io.input_value := xored_addr
       encode_target_addr_valid := true.B
       trap_addr_encoder.io.input_value := io.ingress.group(my_index).iaddr >> 1.U
       encode_trap_addr_valid := true.B
@@ -328,7 +331,7 @@ class MessageEncoder(
     is (TraceItype.ITReturn) {
       header_byte := HeaderByte.from_trap_type(FullHeaderType.FTrap, TrapType.TReturn)
       comp_header := CompressedHeaderType.CNA.asUInt
-      target_addr_encoder.io.input_value := target_addr_msg
+      target_addr_encoder.io.input_value := xored_addr
       encode_target_addr_valid := true.B
       trap_addr_encoder.io.input_value := io.ingress.group(my_index).iaddr >> 1.U
       encode_trap_addr_valid := true.B
