@@ -105,7 +105,7 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
     message_encoder.io.ingress_valid := ingress_1.group(i).iretire === 1.U && (if (i==0) (state === sData || state === sSync) else (state === sData))
 
     metadata_enq_bits(i) := message_encoder.io.metadata
-    metadata_enq_bits(i).time := Mux(is_first_valid(i), time_encoder.io.output_mask, 0.U)
+    metadata_enq_bits(i).time := Mux(is_first_valid(i), time_encoder.io.output_mask, 1.U)
     val time_can_be_compressed = Mux(is_first_valid(i), delta_time < MAX_DELTA_TIME_COMP.U, true.B)
     val is_compressed = message_encoder.io.possible_to_compress && time_can_be_compressed
     metadata_enq_bits(i).is_full := ~is_compressed
@@ -113,7 +113,9 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
     metadata_buffer.io.enqs(i).valid := message_encoder.io.packet_valid && !sent
 
     message_packet_enq_bits(i) := message_encoder.io.message
-    message_packet_enq_bits(i).time := Mux(is_first_valid(i), time_encoder.io.output_bytes, VecInit.fill(time_encoder.maxNumBytes)(0.U(8.W)))
+    val zero_varlen_bytes = VecInit.fill(time_encoder.maxNumBytes)(0.U(8.W))
+    zero_varlen_bytes(0) := 0x80.U(8.W) // signify a varlen encoded zero
+    message_packet_enq_bits(i).time := Mux(is_first_valid(i), time_encoder.io.output_bytes, zero_varlen_bytes)
     message_packet_buffer.io.enqs(i).bits := message_packet_enq_bits(i)
     message_packet_buffer.io.enqs(i).valid := message_encoder.io.packet_valid && !is_compressed && !sent
 

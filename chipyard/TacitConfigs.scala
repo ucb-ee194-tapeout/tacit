@@ -138,7 +138,7 @@ class TacitBoomConfig extends Config(
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
   new freechips.rocketchip.subsystem.WithoutTLMonitors ++
-  new boom.v4.common.WithBoomCommitLogPrintf ++
+  // new boom.v4.common.WithBoomCommitLogPrintf ++
   new boom.v4.common.WithNLargeBooms(1) ++                          // large boom config
   new chipyard.config.WithSystemBusWidth(128) ++
   new chipyard.config.AbstractConfig)
