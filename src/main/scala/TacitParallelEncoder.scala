@@ -153,7 +153,7 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
     }
     is (sData) {
       when (!io.control.enable) {
-        state := sSync
+        state := Mux(pipeline_advance, sSync, sData)
         sync_type := SyncType.SyncEnd
       } .otherwise {
         time_encoder.io.input_value := delta_time
@@ -162,10 +162,11 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
       }
     }
   }
+  def stallThreshold(count: UInt) = count >= (outer.bufferDepth - outer.coreStages).U
 
-  io.stall := metadata_buffer.io.stall_enq || 
-              message_packet_buffer.io.stall_enq ||
-              header_buffer.io.stall_enq
+  io.stall := stallThreshold(metadata_buffer.io.count) || 
+              stallThreshold(message_packet_buffer.io.count) ||
+              stallThreshold(header_buffer.io.count)
 }
 
 class MessageEncoder(

@@ -52,7 +52,7 @@ class WithTacitEncoder extends Config((site, here, up) => {
           iaddrWidth = tp.tileParams.core.xLen
         ),
         bufferDepth = 64,
-        coreStages = 0, // BOOM stalls commit, not fetch
+        coreStages = 5, // BOOM stalls commit, not fetch
         )(p)),
         useArbiterMonitor = false
       )),

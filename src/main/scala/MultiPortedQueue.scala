@@ -21,6 +21,7 @@ class MultiPortedRegQueue[T <: Data](
     val enqs = Flipped(Vec(numInputs, Decoupled(gen)))
     val deq = Decoupled(gen)
     val stall_enq = Output(Bool())
+    val count = Output(UInt(log2Ceil(numEntries).W))
   })
 
   requireIsChiselType(gen)
@@ -44,9 +45,9 @@ class MultiPortedRegQueue[T <: Data](
   // explicitly excluding the tail case, as the final element hitting head is ok
   val might_hit_head = (1 until numInputs).map(k => rotateLeft(tail, k) & head).reduce(_|_).orR
   // is the tail at the head?
-  val at_head = (tail & head).orR
+  val ptr_match = (tail & head).orR
 
-  val do_enq = !(at_head && maybe_full || might_hit_head)
+  val do_enq = !(ptr_match && maybe_full || might_hit_head)
   io.enqs.map(_.ready := do_enq)
   io.stall_enq := !do_enq
 
@@ -93,6 +94,21 @@ class MultiPortedRegQueue[T <: Data](
 
   io.deq.bits := Mux1H(head, ram)
   io.deq.valid := !empty
+
+  // Convert one-hot masks to binary indices for count calculation
+  val tail_idx = OHToUInt(tail)
+  val head_idx = OHToUInt(head)
+  val ptr_diff = tail_idx - head_idx
+
+  if (isPow2(numEntries)) {
+    io.count := Mux(maybe_full && ptr_match, numEntries.U, 0.U) | ptr_diff
+  } else {
+    io.count := Mux(
+      ptr_match,
+      Mux(maybe_full, numEntries.asUInt, 0.U),
+      Mux(head_idx > tail_idx, numEntries.asUInt + ptr_diff, ptr_diff)
+    )
+  }
 }
 
 /* A queue that allows multiple inputs to be enqueued per cycle and a single output to be dequeued.
