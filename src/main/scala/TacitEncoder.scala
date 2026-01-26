@@ -231,7 +231,7 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
       // 2 bits for bp mode, 6 bits for n_entries
       runtime_cfg := Cat(log2Ceil(outer.bpParams.n_entries/64).U, io.control.bp_mode(1,0))
       trap_addr_encoder.io.input_value := runtime_cfg
-      encode_trap_addr_valid := sync_type === SyncType.SyncStart
+      encode_trap_addr_valid := true.B
       // context
       ctx_encoder.io.input_value := ingress_0.ctx
       encode_ctx_valid := true.B
