@@ -119,7 +119,7 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
     message_packet_buffer.io.enqs(i).bits := message_packet_enq_bits(i)
     message_packet_buffer.io.enqs(i).valid := message_encoder.io.packet_valid && !is_compressed && !sent
 
-    val compressed_packet = Cat(delta_time(5,0), message_encoder.io.comp_header)
+    val compressed_packet = Cat(Mux(is_first_valid(i), delta_time(5,0), 0.U(6.W)), message_encoder.io.comp_header)
     header_buffer.io.enqs(i).bits := Mux(is_compressed, compressed_packet, message_encoder.io.full_header)
     header_buffer.io.enqs(i).valid := message_encoder.io.packet_valid && !sent
   }
@@ -158,7 +158,6 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
       } .otherwise {
         time_encoder.io.input_value := delta_time
         time_encoder.io.input_valid := true.B
-        prev_time := ingress_1.time
       }
     }
   }
@@ -268,25 +267,6 @@ class MessageEncoder(
   trap_addr_encoder.io.input_value := DontCare
   encode_trap_addr_valid := false.B
   
-  if (canEncodeSyncMessage) {
-    when (io.encode_sync.get) {
-      io.packet_valid := true.B
-      header_byte := HeaderByte.from_sync_type(FullHeaderType.FSync, io.sync_type.get)
-      target_addr_encoder.io.input_value := io.sync_ingress.get.group(my_index).iaddr >> 1.U
-      encode_target_addr_valid := true.B
-      prv_encoder.io.from_priv := 0b00.U
-      prv_encoder.io.to_priv := io.sync_ingress.get.priv
-      encode_prv_valid := true.B
-      // reuse trap address for runtime_cfg
-      val runtime_cfg = 0.U(7.W)
-      // 2 bits for bp mode, 6 bits for n_entries
-      trap_addr_encoder.io.input_value := runtime_cfg
-      encode_trap_addr_valid := true.B
-      ctx_encoder.io.input_value := io.sync_ingress.get.ctx
-      encode_ctx_valid := true.B
-      possible_to_compress := false.B
-    }
-  }
   switch (io.ingress.group(my_index).itype) {
     is (TraceItype.ITBrTaken) {
       header_byte := HeaderByte(FullHeaderType.FTakenBranch)
@@ -343,6 +323,26 @@ class MessageEncoder(
       encode_prv_valid := true.B
       ctx_encoder.io.input_value := io.ingress.ctx
       encode_ctx_valid := io.target_prv_msg === 0.U // encode ctx if returning to user mode
+      possible_to_compress := false.B
+    }
+  }
+
+  if (canEncodeSyncMessage) {
+    when (io.encode_sync.get) {
+      io.packet_valid := true.B
+      header_byte := HeaderByte.from_sync_type(FullHeaderType.FSync, io.sync_type.get)
+      target_addr_encoder.io.input_value := io.sync_ingress.get.group(my_index).iaddr >> 1.U
+      encode_target_addr_valid := true.B
+      prv_encoder.io.from_priv := 0b00.U
+      prv_encoder.io.to_priv := io.sync_ingress.get.priv
+      encode_prv_valid := true.B
+      // reuse trap address for runtime_cfg
+      val runtime_cfg = 0.U(7.W)
+      // 2 bits for bp mode, 6 bits for n_entries
+      trap_addr_encoder.io.input_value := runtime_cfg
+      encode_trap_addr_valid := true.B
+      ctx_encoder.io.input_value := io.sync_ingress.get.ctx
+      encode_ctx_valid := true.B
       possible_to_compress := false.B
     }
   }
