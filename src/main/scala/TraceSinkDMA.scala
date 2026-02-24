@@ -13,6 +13,32 @@ import shuttle.common.{ShuttleTile, ShuttleTileAttachParams}
 import freechips.rocketchip.trace._
 import testchipip.soc.{SubsystemInjector, SubsystemInjectorKey}
 
+/** Takes a Bool and forces it to deassert after pulseLength cycles by using Chisel last-connect semantics, effectively
+  * "stretching" the pulse.
+  *
+  * @param in
+  *   The wire to override
+  *
+  * @param pulseLength
+  *   the number of cycles to stretch the pulse over.
+  */
+// copied from midas.widgets.Pulsify
+object Pulsify {
+  def apply(in: Bool, pulseLength: Int): Unit = {
+    require(pulseLength > 0)
+    if (pulseLength > 1) {
+      val count = Counter(pulseLength)
+      when(in) { count.inc() }
+      when(count.value === (pulseLength - 1).U) {
+        in          := false.B
+        count.value := 0.U
+      }
+    } else {
+      when(in) { in := false.B }
+    }
+  }
+}
+
 case class TraceSinkDMAParams(
   regNodeBaseAddr: BigInt,
   beatBytes: Int
@@ -47,40 +73,38 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
     val collect_counter = RegInit(0.U(4.W))
     val msg_buffer = RegInit(VecInit(Seq.fill(busWidth / 8)(0.U(8.W))))
 
-    val max_inflight_counter = RegInit(16.U(16.W))
-
     val dma_start_addr = RegInit(0.U(64.W))
     val dma_addr_write_valid = Wire(Bool())
 
+    // control registers
+    // flush the stale packets in the message buffer
     val flush_reg = RegInit(false.B)
+    // software reset the DMA engine to clear all the status registers
+    val reset_reg = RegInit(false.B)
+
+    // status registers
+    // done flag that indicates that the DMA engine has finished processing all the packets
     val done_reg = RegInit(false.B)
     val collect_full = collect_counter === (busWidth / 8).U
     val collect_advance = Mux(flush_reg, collect_full || fifo.io.deq.valid === false.B, collect_full)
     val flush_done = (flush_reg) && (fifo.io.deq.valid === false.B) && mstate === mIdle
     done_reg := done_reg || flush_done
     
-    val inflight_counter = RegInit(0.U(4.W))
-
-    mem.a.valid := mstate === mWrite && inflight_counter < max_inflight_counter
-    mem.d.ready := true.B
-    fifo.io.deq.ready := false.B // default case 
-    dontTouch(mem.d.valid)
-
     // mask according to collect_counter
     val mask = (1.U << collect_counter) - 1.U
     // putting the buffer data on the TL mem lane
 
-    inflight_counter := Mux(mem.a.fire && !mem.d.fire, inflight_counter + 1.U, 
-        Mux(mem.d.fire && !mem.a.fire, inflight_counter - 1.U, inflight_counter))
-
     val put_req = edge.Put(
-      fromSource = 0.U,
+      fromSource = 0.U,  // to be overridden by the SourceGenerator
       toAddress = addr_counter + dma_start_addr,
       lgSize = log2Ceil(busWidth / 8).U,
       data = Cat(msg_buffer.reverse),
       mask = mask)._2
 
     mem.a.bits := put_req
+    val (sourceReady, _) = SourceGenerator(mem)
+    mem.a.valid := mstate === mWrite && sourceReady
+    mem.d.ready := true.B
 
     switch(mstate) {
       is (mIdle) {
@@ -103,6 +127,17 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
         addr_counter := Mux(mem.a.fire, addr_counter + collect_counter, addr_counter)
       }
     }
+
+    when (reset_reg) {
+      mstate := mIdle
+      addr_counter := 0.U
+      collect_counter := 0.U
+      // FIXME: maybe should not clear the message buffer for timing concerns
+      msg_buffer := VecInit(Seq.fill(busWidth / 8)(0.U(8.W)))
+      dma_start_addr := 0.U
+      dma_addr_write_valid := false.B
+    }
+    Pulsify(reset_reg, 1)
 
     // regmap handler functions
     def traceSinkDMARegWrite(valid: Bool, bits: UInt): Bool = {
@@ -132,10 +167,10 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
             RegFieldDesc("dma_start_addr", "DMA start address"))
         ),
         0x10 -> Seq(RegField(64, addr_counter,
-            RegFieldDesc("addr_counter", "Address counter"))
+            RegFieldDesc("addr_counter", "Address counter, this is the number of bytes written to the memory to date"))
         ),
-        0x18 -> Seq(RegField(16, max_inflight_counter, 
-          RegFieldDesc("max_inflight_counter", "Max inflight counter")))
+        0x18 -> Seq(RegField(1, reset_reg, 
+          RegFieldDesc("reset_reg", "Soft reset register")))
       ):_*
     )
   }
@@ -164,6 +199,26 @@ class WithTraceSinkDMA(targetId: Int = 1) extends Config((site, here, up) => {
             beatBytes = xBytes), hartId = tp.tileParams.tileId)(p)), targetId)))))
       )
     }
+    // case tp: boom.v3.common.BoomTileAttachParams => {
+    //   val xBytes = tp.tileParams.core.xLen / 8
+    //   tp.copy(tileParams = tp.tileParams.copy(
+    //     traceParams = Some(tp.tileParams.traceParams.get.copy(buildSinks = 
+    //       tp.tileParams.traceParams.get.buildSinks :+ (p => 
+    //         (LazyModule(new TraceSinkDMA(TraceSinkDMAParams(
+    //         regNodeBaseAddr = 0x3010000 + tp.tileParams.tileId * 0x1000,
+    //         beatBytes = xBytes), hartId = tp.tileParams.tileId)(p)), targetId)))))
+    //   )
+    // }
+    // case tp: boom.v4.common.BoomTileAttachParams => {
+    //   val xBytes = tp.tileParams.core.xLen / 8
+    //   tp.copy(tileParams = tp.tileParams.copy(
+    //     traceParams = Some(tp.tileParams.traceParams.get.copy(buildSinks = 
+    //       tp.tileParams.traceParams.get.buildSinks :+ (p => 
+    //         (LazyModule(new TraceSinkDMA(TraceSinkDMAParams(
+    //         regNodeBaseAddr = 0x3010000 + tp.tileParams.tileId * 0x1000,
+    //         beatBytes = xBytes), hartId = tp.tileParams.tileId)(p)), targetId)))))
+    //   )
+    // }
     case other => other
   }
   case SubsystemInjectorKey => up(SubsystemInjectorKey) + TraceSinkDMAInjector
