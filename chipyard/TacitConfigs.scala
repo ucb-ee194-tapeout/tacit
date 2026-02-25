@@ -86,6 +86,16 @@ class TacitRocketConfig extends Config(
   new freechips.rocketchip.rocket.WithNHugeCores(1) ++
   new chipyard.config.AbstractConfig)
 
+// Rocket with Tacit encoder and trace sinks
+class TacitRocketDMAWithTLMonitorConfig extends Config(
+  new tacit.WithTraceSinkDMA(1) ++
+  new tacit.WithTraceSinkAlways(0) ++
+  new chipyard.config.WithTraceArbiterMonitor ++
+  new chipyard.WithTacitEncoder ++
+  new chipyard.config.WithNPerfCounters(29) ++
+  new freechips.rocketchip.rocket.WithNHugeCores(1) ++
+  new chipyard.config.AbstractConfig)
+
 // Shuttle with Tacit encoder and trace sinks
 class TacitShuttleConfig extends Config(
   new tacit.WithTraceSinkDMA(1) ++
@@ -148,8 +158,21 @@ class TacitDualRocketRawByteConfig extends Config(
   new freechips.rocketchip.rocket.WithNHugeCores(2) ++
   new chipyard.config.AbstractConfig)
 
+class TacitMediumBoomV3RawByteConfig extends Config(
+  new tacit.WithTraceSinkRawByte(1) ++
+  // new tacit.WithTraceSinkDMA(1) ++
+  new tacit.WithTraceSinkAlways(0) ++
+  new chipyard.config.WithTraceArbiterMonitor ++
+  new chipyard.WithTacitEncoder ++
+  new freechips.rocketchip.subsystem.WithoutTLMonitors ++
+  new chipyard.config.WithAsidLen(16) ++
+  new boom.v3.common.WithNMediumBooms(1) ++
+  new chipyard.config.WithSystemBusWidth(128) ++
+  new chipyard.config.AbstractConfig)
+
 class TacitLargeBoomV3RawByteConfig extends Config(
   new tacit.WithTraceSinkRawByte(1) ++
+  // new tacit.WithTraceSinkDMA(1) ++
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
@@ -161,6 +184,7 @@ class TacitLargeBoomV3RawByteConfig extends Config(
 
 class TacitMegaBoomV3RawByteConfig extends Config(
   new tacit.WithTraceSinkRawByte(1) ++
+  // new tacit.WithTraceSinkDMA(1) ++
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
@@ -177,17 +201,6 @@ class TacitLargeBoomV3NoASIDRawByteConfig extends Config(
   new chipyard.WithTacitEncoder ++
   new freechips.rocketchip.subsystem.WithoutTLMonitors ++
   new boom.v3.common.WithNLargeBooms(1) ++
-  new chipyard.config.WithSystemBusWidth(128) ++
-  new chipyard.config.AbstractConfig)
-
-class TacitMediumBoomV3RawByteConfig extends Config(
-  new tacit.WithTraceSinkRawByte(1) ++
-  new tacit.WithTraceSinkAlways(0) ++
-  new chipyard.config.WithTraceArbiterMonitor ++
-  new chipyard.WithTacitEncoder ++
-  new freechips.rocketchip.subsystem.WithoutTLMonitors ++
-  new chipyard.config.WithAsidLen(16) ++
-  new boom.v3.common.WithNMediumBooms(1) ++
   new chipyard.config.WithSystemBusWidth(128) ++
   new chipyard.config.AbstractConfig)
 

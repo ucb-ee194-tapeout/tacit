@@ -105,10 +105,10 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
     val (sourceReady, _) = SourceGenerator(mem)
     mem.a.valid := mstate === mWrite && sourceReady
     mem.d.ready := true.B
+    fifo.io.deq.ready := false.B
 
     switch(mstate) {
       is (mIdle) {
-        fifo.io.deq.ready := false.B
         mstate := Mux(fifo.io.deq.valid, mCollect, mIdle)
         collect_counter := 0.U
       }
@@ -122,7 +122,6 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
       // potentially, optimize this by pipelining collect and write
       is (mWrite) {
         // we need to write the collected data to the memory
-        fifo.io.deq.ready := false.B
         mstate := Mux(mem.a.fire, mIdle, mWrite)
         addr_counter := Mux(mem.a.fire, addr_counter + collect_counter, addr_counter)
       }
