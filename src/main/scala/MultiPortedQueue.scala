@@ -111,6 +111,53 @@ class MultiPortedRegQueue[T <: Data](
   }
 }
 
+class MultiPortedQueue[T <: Data](
+  val gen: T,
+  val numEntries: Int,
+  val numInputs: Int,
+  val useSramQueue: Boolean = false
+) extends Module {
+  requireIsChiselType(gen)
+  val io = IO(new Bundle {
+    val enqs = Flipped(Vec(numInputs, Decoupled(gen)))
+    val deq = Decoupled(gen)
+    val stall_enq = Output(Bool())
+    val count = Output(UInt(log2Ceil(numEntries).W))
+  })
+
+  if (!useSramQueue) {
+    val queue = Module(new MultiPortedRegQueue(gen, numEntries, numInputs))
+    queue.io.enqs <> io.enqs
+    io.deq <> queue.io.deq
+    io.stall_enq := queue.io.stall_enq
+    io.count := queue.io.count
+  } else {
+    require(numEntries % numInputs == 0, "SRAM queue requires numEntries divisible by numInputs")
+    val queue = Module(new MultiPortedSRAMQueue(gen, numEntries / numInputs, numInputs))
+    queue.io.enqs <> io.enqs
+    io.deq <> queue.io.deq
+    io.stall_enq := queue.io.full
+
+    val countReg = RegInit(0.U(log2Ceil(numEntries + 1).W))
+    val enqCount = PopCount(io.enqs.map(_.fire))
+    val deqCount = io.deq.fire.asUInt
+    countReg := countReg + enqCount - deqCount
+    io.count := countReg
+  }
+}
+
+object MultiPortedQueue {
+  private val defaultUseSramQueue = false
+
+  def apply[T <: Data](gen: T, numEntries: Int, numInputs: Int): MultiPortedQueue[T] = {
+    Module(new MultiPortedQueue(gen, numEntries, numInputs, useSramQueue = defaultUseSramQueue))
+  }
+
+  def apply[T <: Data](gen: T, numEntries: Int, numInputs: Int, useSramQueue: Boolean): MultiPortedQueue[T] = {
+    Module(new MultiPortedQueue(gen, numEntries, numInputs, useSramQueue = useSramQueue))
+  }
+}
+
 /* A queue that allows multiple inputs to be enqueued per cycle and a single output to be dequeued.
   All or nothing enqueue, ordered dequeue
 */
@@ -128,94 +175,112 @@ class MultiPortedSRAMQueue[T <: Data](
     val full = Output(Bool()) // essentially enq ready, but deduplicated
   })
 
-  def max_entries = depth * numInputs
+  require(depth > 0)
+  require(numInputs > 0)
 
-  // points to the idx in the SRAM, disregarding which bank it is in
-  val enq_index = RegInit(0.U(log2Ceil(depth).W))      // which row in each bank
-  val enq_bank = RegInit(0.U(log2Ceil(numInputs).W))   // which bank to start from
-  val deq_index = RegInit(0.U(log2Ceil(depth).W))
-  val deq_bank = RegInit(0.U(log2Ceil(numInputs).W))
+  val maxEntries = depth * numInputs
+  val ptrWidth = log2Ceil(maxEntries)
+  val countWidth = log2Ceil(maxEntries + 1)
 
-  val maybe_full = RegInit(false.B)
-  val ptr_match = enq_index === deq_index
-  val deq_ptr = deq_index * numInputs.U + deq_bank
-  val enq_ptr = enq_index * numInputs.U + enq_bank
-  val ptr_diff = enq_ptr - deq_ptr
-
-  val do_enq = io.enqs.map(_.fire).reduce(_ || _)
-  val do_deq = io.deq.fire
-
-  // number of enqs in this cycle
-  val enq_count = io.enqs.map(_.fire.asUInt).reduce(_ +& _)
-
-  when (do_enq) {
-    val next_bank = enq_bank + enq_count
-    // wrap around if we overflow the number of banks
-    when (next_bank >= numInputs.U) {
-      enq_bank := next_bank - numInputs.U
-      enq_index := Mux(enq_index === (depth - 1).U, 0.U, enq_index + 1.U)
-    }.otherwise {
-      // otherwise, just increment the bank
-      enq_bank := next_bank
-    }
+  def wrapAdd(ptr: UInt, inc: UInt): UInt = {
+    val sum = ptr +& inc
+    Mux(sum >= maxEntries.U, (sum - maxEntries.U)(ptrWidth - 1, 0), sum(ptrWidth - 1, 0))
   }
 
-  when (do_deq) {
-    when (deq_bank === (numInputs - 1).U) {
-      deq_bank := 0.U
-      deq_index := deq_index + 1.U
-    }.otherwise {
-      deq_bank := deq_bank + 1.U
-    }
+  private val bankIdxWidth = log2Ceil(numInputs)
+  def bankOf(ptr: UInt): UInt = {
+    if (numInputs == 1) 0.U(1.W) else (ptr % numInputs.U)(bankIdxWidth - 1, 0)
   }
+  def rowOf(ptr: UInt): UInt = ptr / numInputs.U
 
-  when(do_enq =/= do_deq) {
-    maybe_full := do_enq
+  val banks = Seq.fill(numInputs)(SyncReadMem(depth, gen, SyncReadMem.WriteFirst))
+
+  val enqPtr = RegInit(0.U(ptrWidth.W))
+  val deqPtr = RegInit(0.U(ptrWidth.W))
+  val entries = RegInit(0.U(countWidth.W))
+
+  val frontData = Reg(gen)
+  val frontValid = RegInit(false.B)
+
+  val readPending = RegInit(false.B)
+  val readPendingBank = RegInit(0.U(bankIdxWidth.W))
+
+  // Match the register queue policy: all inputs share one ready bit and enqueue is all-or-nothing
+  // with capacity reserved for a full numInputs-wide enqueue.
+  val canAccept = entries <= (maxEntries - numInputs).U
+  io.enqs.foreach(_.ready := canAccept)
+  io.full := !canAccept
+
+  val enqFireVec = io.enqs.map(enq => enq.valid && canAccept)
+  val enqCount = PopCount(enqFireVec)
+  val doEnq = enqCount =/= 0.U
+  val deqValid = frontValid || readPending
+  val doDeq = io.deq.ready && deqValid
+
+  val writeEnable = WireInit(VecInit(Seq.fill(numInputs)(false.B)))
+  val writeAddr = Wire(Vec(numInputs, UInt(log2Ceil(depth).W)))
+  val writeData = Wire(Vec(numInputs, gen))
+  for (i <- 0 until numInputs) {
+    writeAddr(i) := 0.U
+    writeData(i) := DontCare
   }
-
-  // flow control only happens at the io level
-  // once enq is accepted, it is not possible to backpressure anymore
-  val enq_bank_n = Wire(Vec(numInputs, Valid(gen)))
-  val deq_bank_n = Wire(Vec(numInputs, Valid(gen)))
 
   for (i <- 0 until numInputs) {
-    // default, no enq at all
-    enq_bank_n(i).valid := false.B
-    enq_bank_n(i).bits := DontCare
-    // default, no deq at all
-    deq_bank_n(i).valid := false.B
-    deq_bank_n(i).bits := DontCare
-    when (io.enqs(i).fire) {
-      // first, pack enqs - counting among inputs, what is my 0-indexed enq rank?
-      val enq_rank = PopCount(io.enqs.slice(0, i).map(_.fire))
-      // swizzle the enq to the correct bank
-      val enq_bank_idx = (enq_bank + enq_rank) % numInputs.U
-      enq_bank_n(enq_bank_idx).valid := io.enqs(i).fire
-      enq_bank_n(enq_bank_idx).bits := io.enqs(i).bits
+    when (enqFireVec(i)) {
+      val enqRank = PopCount(enqFireVec.take(i))
+      val writePtr = wrapAdd(enqPtr, enqRank)
+      val writeBank = bankOf(writePtr)
+      writeEnable(writeBank) := true.B
+      writeAddr(writeBank) := rowOf(writePtr)
+      writeData(writeBank) := io.enqs(i).bits
     }
   }
 
-  // instantiate SRAM banks
+  val nextDeqPtr = Mux(doDeq, wrapAdd(deqPtr, 1.U), deqPtr)
+  val entriesAfter = entries + enqCount - doDeq.asUInt
+  val frontValidAfterDeq = frontValid && !doDeq
+  val issueFrontRead = entriesAfter =/= 0.U && !frontValidAfterDeq
+
+  val readReqBank = bankOf(nextDeqPtr)
+  val readReqRow = rowOf(nextDeqPtr)
+
+  val bankReadData = Wire(Vec(numInputs, gen))
   for (i <- 0 until numInputs) {
-    val ram = SyncReadMem(depth, gen, SyncReadMem.WriteFirst)
-    when (enq_bank_n(i).valid) {
-      val true_enq_index = Mux(i.U + enq_bank >= numInputs.U, Mux(enq_index === (depth - 1).U, 0.U, enq_index + 1.U), enq_index)
-      ram.write(true_enq_index, enq_bank_n(i).bits)
-      deq_bank_n(i).bits := ram.read(deq_index)
+    when (writeEnable(i)) {
+      banks(i).write(writeAddr(i), writeData(i))
     }
+    val doRead = issueFrontRead && readReqBank === i.U
+    bankReadData(i) := banks(i).read(readReqRow, doRead)
   }
 
-  val entries = Mux(
-    ptr_match,
-    Mux(maybe_full, max_entries.asUInt, 0.U),
-    Mux(deq_ptr > enq_ptr, max_entries.asUInt + ptr_diff, ptr_diff)
-  )
-  // do not account for banks. we conservatively say full when any bank is full
-  val full = entries + enq_count >= max_entries.asUInt
-  val empty = entries === 0.U
+  val readRespData = Mux1H(UIntToOH(readPendingBank, numInputs), bankReadData)
+  val deqBits = Mux(frontValid, frontData, readRespData)
 
-  io.deq.bits := deq_bank_n(deq_bank).bits
-  io.deq.valid := !empty
-  io.full := full
-  io.enqs.map(_.ready := !full)
+  val consumedFromReadPending = doDeq && !frontValid && readPending
+  when (readPending && !consumedFromReadPending) {
+    frontData := readRespData
+  }
+
+  val frontValidNext = (frontValid && !doDeq) || (readPending && !consumedFromReadPending)
+  frontValid := frontValidNext
+
+  when (doDeq) {
+    deqPtr := wrapAdd(deqPtr, 1.U)
+  }
+
+  when (doEnq) {
+    enqPtr := wrapAdd(enqPtr, enqCount)
+  }
+
+  entries := entriesAfter
+
+  when (issueFrontRead) {
+    readPending := true.B
+    readPendingBank := readReqBank
+  } .otherwise {
+    readPending := false.B
+  }
+
+  io.deq.bits := deqBits
+  io.deq.valid := deqValid
 }
