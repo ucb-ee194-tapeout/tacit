@@ -98,7 +98,12 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
   trace_packetizer.io.metadata <> metadata_buffer.io.deq
   trace_packetizer.io.prv <> prv_buffer.io.deq
   trace_packetizer.io.ctx <> ctx_buffer.io.deq
-  trace_packetizer.io.out <> io.out
+
+  // low performance compliance, only use one lane
+  io.out.bits(0) := trace_packetizer.io.out.bits
+  io.out.mask(0) := trace_packetizer.io.out.valid
+  io.out.valid := trace_packetizer.io.out.valid
+  trace_packetizer.io.out.ready := io.out.ready
 
   // intermediate encoder control signals
   val encode_trap_addr_valid = Wire(Bool())

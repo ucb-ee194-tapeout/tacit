@@ -13,7 +13,7 @@ import shuttle.common.{ShuttleTile, ShuttleTileAttachParams}
 import freechips.rocketchip.trace._
 
 class TraceSinkRawByteBundle extends Bundle {
-  val out = Decoupled(UInt(8.W))
+  val out = new TraceEgressInterface()
 }
 
 case class NullParams()

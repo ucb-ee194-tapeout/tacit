@@ -8,6 +8,7 @@ import org.chipsalliance.cde.config.{Parameters, Config}
 import freechips.rocketchip.subsystem._
 import freechips.rocketchip.prci._
 import freechips.rocketchip.regmapper.{RegField, RegFieldDesc}
+import freechips.rocketchip.resources.{Resource, ResourceBinding, ResourceReference}
 import freechips.rocketchip.tile._
 import shuttle.common.{ShuttleTile, ShuttleTileAttachParams}
 import freechips.rocketchip.trace._
@@ -44,6 +45,11 @@ case class TraceSinkDMAParams(
   beatBytes: Int
 )
 
+object DMAMode {
+  val overflow = 0
+  val ringBuffer = 1
+}
+
 class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Parameters) extends LazyTraceSink {
   val node = TLClientNode(Seq(TLMasterPortParameters.v1(Seq(TLClientParameters(
     name = "trace-sink-dma", sourceId = IdRange(0, 16))))))
@@ -57,119 +63,101 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
 
   lazy val module = new TraceSinkDMAImpl(this)
   class TraceSinkDMAImpl(outer: TraceSinkDMA) extends LazyTraceSinkModuleImp(outer) {
-    val fifo = Module(new Queue(UInt(8.W), 32))
-    fifo.io.enq <> io.trace_in
     val (mem, edge) = outer.node.out(0)
-    val addrBits = edge.bundle.addressBits
     val busWidth = edge.bundle.dataBits
-    val blockBytes = p(CacheBlockBytes)
+    private val putFullAddressSets = edge.manager.managers.filterNot(_.supportsPutFull.none).flatMap(_.address)
+    require(putFullAddressSets.nonEmpty, "TraceSinkDMA requires a PutFull-capable manager on its TL edge")
+    private val defaultDmaStartAddr = putFullAddressSets.map(_.base).min
+
+    val serialWidthAggregator = Module(new SerialWidthAggregator(busWidth))
+    serialWidthAggregator.io.narrow <> io.trace_in
     
-    val mIdle :: mCollect :: mWrite :: Nil = Enum(3)
+    val mIdle :: mWrite :: mOverflow :: Nil = Enum(3)
     val mstate = RegInit(mIdle)
     
     // tracks how much trace data have we written in total
     val addr_counter = RegInit(0.U(64.W))
-    // tracks how much trace data have we collected in current transaction
-    val collect_counter = RegInit(0.U(4.W))
-    val msg_buffer = RegInit(VecInit(Seq.fill(busWidth / 8)(0.U(8.W))))
+    // max permissible size of the trace data to write in bytes before we overflow/wrap
+    val max_size_reg = RegInit(((BigInt(1) << 64) - 1).U(64.W))
+    val addr_step = busWidth/8
+    val addr_full = addr_counter + addr_step.U > max_size_reg
 
-    val dma_start_addr = RegInit(0.U(64.W))
-    val dma_addr_write_valid = Wire(Bool())
+    val dma_start_addr = RegInit(defaultDmaStartAddr.U(64.W))
 
     // control registers
-    // flush the stale packets in the message buffer
-    val flush_reg = RegInit(false.B)
     // software reset the DMA engine to clear all the status registers
     val reset_reg = RegInit(false.B)
+    // mode selection register, ring buffer mode or overflow mode
+    val mode_reg = RegInit(DMAMode.overflow.U) // default to overflow mode
 
     // status registers
-    // done flag that indicates that the DMA engine has finished processing all the packets
-    val done_reg = RegInit(false.B)
-    val collect_full = collect_counter === (busWidth / 8).U
-    val collect_advance = Mux(flush_reg, collect_full || fifo.io.deq.valid === false.B, collect_full)
-    val flush_done = (flush_reg) && (fifo.io.deq.valid === false.B) && mstate === mIdle
-    done_reg := done_reg || flush_done
+    // tracks how many times the address counter wrapped around
+    val wrap_count = RegInit(0.U(32.W))
     
-    // mask according to collect_counter
-    val mask = (1.U << collect_counter) - 1.U
     // putting the buffer data on the TL mem lane
 
     val put_req = edge.Put(
       fromSource = 0.U,  // to be overridden by the SourceGenerator
       toAddress = addr_counter + dma_start_addr,
       lgSize = log2Ceil(busWidth / 8).U,
-      data = Cat(msg_buffer.reverse),
-      mask = mask)._2
+      data = serialWidthAggregator.io.wide.bits,
+      mask = Fill(busWidth / 8, 1.U(1.W)))._2
 
     mem.a.bits := put_req
     val (sourceReady, _) = SourceGenerator(mem)
-    mem.a.valid := mstate === mWrite && sourceReady
+    mem.a.valid := mstate === mWrite && sourceReady && serialWidthAggregator.io.wide.valid
+    serialWidthAggregator.io.wide.ready := (mstate === mWrite && sourceReady) || (mstate === mOverflow)
     mem.d.ready := true.B
-    fifo.io.deq.ready := false.B
 
     switch(mstate) {
       is (mIdle) {
-        mstate := Mux(fifo.io.deq.valid, mCollect, mIdle)
-        collect_counter := 0.U
-      }
-      is (mCollect) {
-        // either we have collected enough data or that's all the messages for now
-        mstate := Mux(collect_advance, mWrite, mCollect)
-        collect_counter := Mux(fifo.io.deq.fire, collect_counter + 1.U, collect_counter)
-        msg_buffer(collect_counter) := Mux(fifo.io.deq.fire, fifo.io.deq.bits, msg_buffer(collect_counter))
-        fifo.io.deq.ready := collect_counter < (busWidth / 8).U
+        mstate := Mux(serialWidthAggregator.io.wide.valid, Mux(mode_reg === DMAMode.overflow.U && addr_full, mOverflow, mWrite), mIdle)
       }
       // potentially, optimize this by pipelining collect and write
       is (mWrite) {
         // we need to write the collected data to the memory
-        mstate := Mux(mem.a.fire, mIdle, mWrite)
-        addr_counter := Mux(mem.a.fire, addr_counter + collect_counter, addr_counter)
+        mstate := Mux(mem.a.fire, mIdle ,mWrite)
+        val wrap = mode_reg === DMAMode.ringBuffer.U && addr_full
+        addr_counter := Mux(mem.a.fire, Mux(wrap, 0.U, addr_counter + addr_step.U), addr_counter)
+        when (mem.a.fire && wrap) {
+          wrap_count := wrap_count + 1.U
+        }
+      }
+      is (mOverflow) {
+        // always accept the upstream incoming packets
+        // but never write to the memory
+        // software reset is the only way to clear the overflow state
       }
     }
 
     when (reset_reg) {
       mstate := mIdle
       addr_counter := 0.U
-      collect_counter := 0.U
-      // FIXME: maybe should not clear the message buffer for timing concerns
-      msg_buffer := VecInit(Seq.fill(busWidth / 8)(0.U(8.W)))
       dma_start_addr := 0.U
-      dma_addr_write_valid := false.B
     }
     Pulsify(reset_reg, 1)
-
-    // regmap handler functions
-    def traceSinkDMARegWrite(valid: Bool, bits: UInt): Bool = {
-      dma_addr_write_valid := valid && mstate === mIdle
-      when (dma_addr_write_valid) {
-        dma_start_addr := bits
-      }
-      true.B
-    }
-
-    def traceSinkDMARegRead(ready: Bool): (Bool, UInt) = {
-      (true.B, dma_start_addr)
-    }
 
     val regmap = regnode.regmap(
       Seq(
         0x00 -> Seq(
-          RegField(1, flush_reg,
-            RegFieldDesc("flush_reg", "Flush register"))
-        ),
-        0x04 -> Seq(
-          RegField.r(1, done_reg,
-            RegFieldDesc("done_reg", "Done register"))
-        ),
-        0x08 -> Seq(
-          RegField(64, traceSinkDMARegRead(_), traceSinkDMARegWrite(_, _),
+          RegField(64, dma_start_addr,
             RegFieldDesc("dma_start_addr", "DMA start address"))
         ),
-        0x10 -> Seq(RegField(64, addr_counter,
+        0x08 -> Seq(RegField.r(64, addr_counter,
             RegFieldDesc("addr_counter", "Address counter, this is the number of bytes written to the memory to date"))
         ),
+        0x10 -> Seq(RegField(64, max_size_reg, 
+          RegFieldDesc("max_size_reg", "Max size register, this is the max number of bytes allowed to write before we overflow"))
+        ),
         0x18 -> Seq(RegField(1, reset_reg, 
-          RegFieldDesc("reset_reg", "Soft reset register")))
+          RegFieldDesc("reset_reg", "Soft reset register")),
+          ),
+        0x1c -> Seq(RegField(1, mode_reg,
+          RegFieldDesc("mode_reg", "Mode selection register, 0 for overflow mode, 1 for ring buffer mode")),
+        ),
+        0x20 -> Seq(RegField(32, wrap_count,
+          RegFieldDesc("wrap_count", "Wrap count, this is the number of times the address counter wrapped around"))
+        )
       ):_*
     )
   }
@@ -198,26 +186,26 @@ class WithTraceSinkDMA(targetId: Int = 1) extends Config((site, here, up) => {
             beatBytes = xBytes), hartId = tp.tileParams.tileId)(p)), targetId)))))
       )
     }
-    // case tp: boom.v3.common.BoomTileAttachParams => {
-    //   val xBytes = tp.tileParams.core.xLen / 8
-    //   tp.copy(tileParams = tp.tileParams.copy(
-    //     traceParams = Some(tp.tileParams.traceParams.get.copy(buildSinks = 
-    //       tp.tileParams.traceParams.get.buildSinks :+ (p => 
-    //         (LazyModule(new TraceSinkDMA(TraceSinkDMAParams(
-    //         regNodeBaseAddr = 0x3010000 + tp.tileParams.tileId * 0x1000,
-    //         beatBytes = xBytes), hartId = tp.tileParams.tileId)(p)), targetId)))))
-    //   )
-    // }
-    // case tp: boom.v4.common.BoomTileAttachParams => {
-    //   val xBytes = tp.tileParams.core.xLen / 8
-    //   tp.copy(tileParams = tp.tileParams.copy(
-    //     traceParams = Some(tp.tileParams.traceParams.get.copy(buildSinks = 
-    //       tp.tileParams.traceParams.get.buildSinks :+ (p => 
-    //         (LazyModule(new TraceSinkDMA(TraceSinkDMAParams(
-    //         regNodeBaseAddr = 0x3010000 + tp.tileParams.tileId * 0x1000,
-    //         beatBytes = xBytes), hartId = tp.tileParams.tileId)(p)), targetId)))))
-    //   )
-    // }
+    case tp: boom.v3.common.BoomTileAttachParams => {
+      val xBytes = tp.tileParams.core.xLen / 8
+      tp.copy(tileParams = tp.tileParams.copy(
+        traceParams = Some(tp.tileParams.traceParams.get.copy(buildSinks = 
+          tp.tileParams.traceParams.get.buildSinks :+ (p => 
+            (LazyModule(new TraceSinkDMA(TraceSinkDMAParams(
+            regNodeBaseAddr = 0x3010000 + tp.tileParams.tileId * 0x1000,
+            beatBytes = xBytes), hartId = tp.tileParams.tileId)(p)), targetId)))))
+      )
+    }
+    case tp: boom.v4.common.BoomTileAttachParams => {
+      val xBytes = tp.tileParams.core.xLen / 8
+      tp.copy(tileParams = tp.tileParams.copy(
+        traceParams = Some(tp.tileParams.traceParams.get.copy(buildSinks = 
+          tp.tileParams.traceParams.get.buildSinks :+ (p => 
+            (LazyModule(new TraceSinkDMA(TraceSinkDMAParams(
+            regNodeBaseAddr = 0x3010000 + tp.tileParams.tileId * 0x1000,
+            beatBytes = xBytes), hartId = tp.tileParams.tileId)(p)), targetId)))))
+      )
+    }
     case other => other
   }
   case SubsystemInjectorKey => up(SubsystemInjectorKey) + TraceSinkDMAInjector
@@ -227,15 +215,52 @@ case object TraceSinkDMAInjector extends SubsystemInjector((p, baseSubsystem) =>
   require(baseSubsystem.isInstanceOf[BaseSubsystem with InstantiatesHierarchicalElements])
   val hierarchicalSubsystem = baseSubsystem.asInstanceOf[BaseSubsystem with InstantiatesHierarchicalElements]
   implicit val q: Parameters = p
-  val traceSinkDMAs = hierarchicalSubsystem.totalTiles.values.map { t => t match {
-    case r: RocketTile => r.trace_sinks.collect { case r: TraceSinkDMA => (t, r) }
-    case s: ShuttleTile => s.trace_sinks.collect { case r: TraceSinkDMA => (t, r) }
-    case _ => Nil
-  }}.flatten
-  if (traceSinkDMAs.nonEmpty) {
+  val traceEncoderDmaBindings = hierarchicalSubsystem.totalTiles.values.flatMap {
+    case r: RocketTile =>
+      val traceSinkDmas = r.trace_sinks.collect { case dma: TraceSinkDMA => dma }
+      if (r.trace_encoder_controller.isDefined || traceSinkDmas.nonEmpty) {
+        require(r.trace_encoder_controller.isDefined, s"tile ${r.tileId} has trace DMA sink but no trace encoder controller")
+        require(traceSinkDmas.size == 1, s"tile ${r.tileId} must have exactly one trace DMA sink, found ${traceSinkDmas.size}")
+        Some((r, r.trace_encoder_controller.get, traceSinkDmas.head))
+      } else {
+        None
+      }
+    case s: ShuttleTile =>
+      val traceSinkDmas = s.trace_sinks.collect { case dma: TraceSinkDMA => dma }
+      if (s.trace_encoder_controller.isDefined || traceSinkDmas.nonEmpty) {
+        require(s.trace_encoder_controller.isDefined, s"tile ${s.tileId} has trace DMA sink but no trace encoder controller")
+        require(traceSinkDmas.size == 1, s"tile ${s.tileId} must have exactly one trace DMA sink, found ${traceSinkDmas.size}")
+        Some((s, s.trace_encoder_controller.get, traceSinkDmas.head))
+      } else {
+        None
+      }
+    case b3: boom.v3.common.BoomTile =>
+      val traceSinkDmas = b3.trace_sinks.collect { case dma: TraceSinkDMA => dma }
+      if (b3.trace_encoder_controller.isDefined || traceSinkDmas.nonEmpty) {
+        require(b3.trace_encoder_controller.isDefined, s"tile ${b3.tileId} has trace DMA sink but no trace encoder controller")
+        require(traceSinkDmas.size == 1, s"tile ${b3.tileId} must have exactly one trace DMA sink, found ${traceSinkDmas.size}")
+        Some((b3, b3.trace_encoder_controller.get, traceSinkDmas.head))
+      } else {
+        None
+      }
+    case b4: boom.v4.common.BoomTile =>
+      val traceSinkDmas = b4.trace_sinks.collect { case dma: TraceSinkDMA => dma }
+      if (b4.trace_encoder_controller.isDefined || traceSinkDmas.nonEmpty) {
+        require(b4.trace_encoder_controller.isDefined, s"tile ${b4.tileId} has trace DMA sink but no trace encoder controller")
+        require(traceSinkDmas.size == 1, s"tile ${b4.tileId} must have exactly one trace DMA sink, found ${traceSinkDmas.size}")
+        Some((b4, b4.trace_encoder_controller.get, traceSinkDmas.head))
+      } else {
+        None
+      }
+    case _ => None
+  }
+  if (traceEncoderDmaBindings.nonEmpty) {
     val mbus = baseSubsystem.locateTLBusWrapper(MBUS)
-    traceSinkDMAs.foreach { case (t, s) =>
+    traceEncoderDmaBindings.foreach { case (t, c, s) =>
       t { // in the implicit clock domain of tile
+        ResourceBinding {
+          Resource(c.device, "ucbbar,trace-dma").bind(ResourceReference(s.device.label))
+        }
         mbus.coupleFrom(t.tileParams.baseName) { bus =>
           bus := mbus.crossOut(s.node)(ValName("trace_sink_dma"))(AsynchronousCrossing())
         }

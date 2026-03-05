@@ -159,8 +159,8 @@ class TacitDualRocketRawByteConfig extends Config(
   new chipyard.config.AbstractConfig)
 
 class TacitMediumBoomV3RawByteConfig extends Config(
-  new tacit.WithTraceSinkRawByte(1) ++
-  // new tacit.WithTraceSinkDMA(1) ++
+  new tacit.WithTraceSinkRawByte(2) ++
+  new tacit.WithTraceSinkDMA(1) ++
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
@@ -171,20 +171,20 @@ class TacitMediumBoomV3RawByteConfig extends Config(
   new chipyard.config.AbstractConfig)
 
 class TacitLargeBoomV3RawByteConfig extends Config(
-  new tacit.WithTraceSinkRawByte(1) ++
-  // new tacit.WithTraceSinkDMA(1) ++
+  new tacit.WithTraceSinkRawByte(2) ++
+  new tacit.WithTraceSinkDMA(1) ++
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
-  new freechips.rocketchip.subsystem.WithoutTLMonitors ++
+  // new freechips.rocketchip.subsystem.WithoutTLMonitors ++
   new chipyard.config.WithAsidLen(16) ++
   new boom.v3.common.WithNLargeBooms(1) ++
   new chipyard.config.WithSystemBusWidth(128) ++
   new chipyard.config.AbstractConfig)
 
 class TacitMegaBoomV3RawByteConfig extends Config(
-  new tacit.WithTraceSinkRawByte(1) ++
-  // new tacit.WithTraceSinkDMA(1) ++
+  new tacit.WithTraceSinkRawByte(2) ++
+  new tacit.WithTraceSinkDMA(1) ++
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
@@ -195,7 +195,8 @@ class TacitMegaBoomV3RawByteConfig extends Config(
   new chipyard.config.AbstractConfig)
 
 class TacitLargeBoomV3NoASIDRawByteConfig extends Config(
-  new tacit.WithTraceSinkRawByte(1) ++
+  new tacit.WithTraceSinkRawByte(2) ++
+  new tacit.WithTraceSinkDMA(1) ++
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
@@ -205,6 +206,8 @@ class TacitLargeBoomV3NoASIDRawByteConfig extends Config(
   new chipyard.config.AbstractConfig)
 
 class TacitLargeBoomV4Config extends Config(
+  new tacit.WithTraceSinkRawByte(2) ++
+  new tacit.WithTraceSinkDMA(1) ++
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
@@ -215,7 +218,8 @@ class TacitLargeBoomV4Config extends Config(
   new chipyard.config.AbstractConfig)
 
 class TacitLargeBoomV4RawByteConfig extends Config(
-  new tacit.WithTraceSinkRawByte(1) ++
+  new tacit.WithTraceSinkRawByte(2) ++
+  new tacit.WithTraceSinkDMA(1) ++
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
@@ -226,7 +230,8 @@ class TacitLargeBoomV4RawByteConfig extends Config(
   new chipyard.config.AbstractConfig)
 
 class TacitLargeBoomV4RawByteNoASIDConfig extends Config(
-  new tacit.WithTraceSinkRawByte(1) ++
+  new tacit.WithTraceSinkRawByte(2) ++
+  new tacit.WithTraceSinkDMA(1) ++
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
@@ -236,7 +241,8 @@ class TacitLargeBoomV4RawByteNoASIDConfig extends Config(
   new chipyard.config.AbstractConfig)
 
 class TacitMediumBoomV4RawByteConfig extends Config(
-  new tacit.WithTraceSinkRawByte(1) ++
+  new tacit.WithTraceSinkRawByte(2) ++
+  new tacit.WithTraceSinkDMA(1) ++
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
