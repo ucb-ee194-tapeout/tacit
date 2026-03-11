@@ -65,9 +65,6 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
   class TraceSinkDMAImpl(outer: TraceSinkDMA) extends LazyTraceSinkModuleImp(outer) {
     val (mem, edge) = outer.node.out(0)
     val busWidth = edge.bundle.dataBits
-    private val putFullAddressSets = edge.manager.managers.filterNot(_.supportsPutFull.none).flatMap(_.address)
-    require(putFullAddressSets.nonEmpty, "TraceSinkDMA requires a PutFull-capable manager on its TL edge")
-    private val defaultDmaStartAddr = putFullAddressSets.map(_.base).min
 
     val serialWidthAggregator = Module(new SerialWidthAggregator(busWidth))
     serialWidthAggregator.io.narrow <> io.trace_in
@@ -82,7 +79,7 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
     val addr_step = busWidth/8
     val addr_full = addr_counter + addr_step.U > max_size_reg
 
-    val dma_start_addr = RegInit(defaultDmaStartAddr.U(64.W))
+    val dma_start_addr = RegInit(0.U(64.W))
 
     // control registers
     // software reset the DMA engine to clear all the status registers
@@ -103,25 +100,54 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
       data = serialWidthAggregator.io.wide.bits,
       mask = Fill(busWidth / 8, 1.U(1.W)))._2
 
+    val sourceGen = Module(new SourceGenerator(edge.bundle.sourceBits))
+    val sourceReady = sourceGen.io.id.valid
+    val entering_mWrite = mstate === mIdle && serialWidthAggregator.io.wide.valid &&
+                      !(mode_reg === DMAMode.overflow.U && addr_full) &&
+                      sourceReady
+    sourceGen.io.gen := entering_mWrite
+    sourceGen.io.reclaim.valid := mem.d.fire
+    sourceGen.io.reclaim.bits := mem.d.bits.source
+    val latched_source = Reg(UInt(edge.bundle.sourceBits.W))
+    when (entering_mWrite) {
+      latched_source := sourceGen.io.id.bits
+    }
     mem.a.bits := put_req
-    val (sourceReady, _) = SourceGenerator(mem)
+    mem.a.bits.source := latched_source
     mem.a.valid := mstate === mWrite && sourceReady && serialWidthAggregator.io.wide.valid
-    serialWidthAggregator.io.wide.ready := (mstate === mWrite && sourceReady) || (mstate === mOverflow)
+    serialWidthAggregator.io.wide.ready := mem.a.fire || (mstate === mOverflow)
     mem.d.ready := true.B
+
+    // assertions
+    // are we ever writing out of bounds?
+    val write_addr = mem.a.bits.address
+    val write_start = write_addr - dma_start_addr
+    val write_end_excl = write_start + addr_step.U
+
+    assert(!(mem.a.fire && (write_end_excl > max_size_reg)), "DMA is writing out of bounds")
+    assert(!(mem.d.fire && mem.d.bits.denied),  "DMA got denied D response")
+    assert(!(mem.d.fire && mem.d.bits.corrupt), "DMA got corrupt D response")
 
     switch(mstate) {
       is (mIdle) {
-        mstate := Mux(serialWidthAggregator.io.wide.valid, Mux(mode_reg === DMAMode.overflow.U && addr_full, mOverflow, mWrite), mIdle)
+        when (serialWidthAggregator.io.wide.valid) {
+          when (mode_reg === DMAMode.overflow.U && addr_full) {
+            mstate := mOverflow
+          } .elsewhen (sourceReady) {
+            mstate := mWrite
+            latched_source := sourceGen.io.id.bits
+          }
+        }
+        when (mode_reg === DMAMode.ringBuffer.U && addr_full && serialWidthAggregator.io.wide.valid) {
+          wrap_count := wrap_count + 1.U
+          addr_counter := 0.U
+        }
       }
       // potentially, optimize this by pipelining collect and write
       is (mWrite) {
         // we need to write the collected data to the memory
         mstate := Mux(mem.a.fire, mIdle ,mWrite)
-        val wrap = mode_reg === DMAMode.ringBuffer.U && addr_full
-        addr_counter := Mux(mem.a.fire, Mux(wrap, 0.U, addr_counter + addr_step.U), addr_counter)
-        when (mem.a.fire && wrap) {
-          wrap_count := wrap_count + 1.U
-        }
+        addr_counter := Mux(mem.a.fire, addr_counter + addr_step.U, addr_counter)
       }
       is (mOverflow) {
         // always accept the upstream incoming packets
@@ -133,7 +159,6 @@ class TraceSinkDMA(params: TraceSinkDMAParams, hartId: Int)(implicit p: Paramete
     when (reset_reg) {
       mstate := mIdle
       addr_counter := 0.U
-      dma_start_addr := 0.U
     }
     Pulsify(reset_reg, 1)
 

@@ -188,7 +188,7 @@ class TacitMegaBoomV3RawByteConfig extends Config(
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
-  new freechips.rocketchip.subsystem.WithoutTLMonitors ++
+  // new freechips.rocketchip.subsystem.WithoutTLMonitors ++
   new chipyard.config.WithAsidLen(16) ++
   new boom.v3.common.WithNMegaBooms(1) ++
   new chipyard.config.WithSystemBusWidth(128) ++

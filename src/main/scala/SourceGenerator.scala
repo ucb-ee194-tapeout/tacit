@@ -77,6 +77,6 @@ object SourceGenerator {
     sourceGen.io.reclaim.valid := node.d.fire
     sourceGen.io.reclaim.bits := node.d.bits.source
 
-    (sourceGen.io.id.valid, sourceGen.io.inflight)
+    (sourceGen.io.id.valid, sourceGen.io.inflight, sourceGen)
   }
 }
