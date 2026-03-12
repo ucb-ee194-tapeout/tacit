@@ -63,9 +63,9 @@ class TacitParallelEncoderModule(outer: TacitParallelEncoder) extends LazyTraceE
   val time_encoder = Module(new VarLenMaskEncoder(coreParams.xlen))
   
   // buffers
-  val metadata_buffer = MultiPortedQueue(new MetaDataBundle(coreParams), outer.bufferDepth, coreParams.nGroups)
-  val message_packet_buffer = MultiPortedQueue(new MessagePacketBundle(coreParams), outer.bufferDepth, coreParams.nGroups)
-  val header_buffer = MultiPortedQueue(UInt(8.W), outer.bufferDepth, coreParams.nGroups)
+  val metadata_buffer = MultiPortedQueue(new MetaDataBundle(coreParams), outer.bufferDepth, coreParams.nGroups, useSramQueue = true)
+  val message_packet_buffer = MultiPortedQueue(new MessagePacketBundle(coreParams), outer.bufferDepth, coreParams.nGroups, useSramQueue = true)
+  val header_buffer = MultiPortedQueue(UInt(8.W), outer.bufferDepth, coreParams.nGroups, useSramQueue = true)
 
   val trace_packetizer = Module(new TraceMaskedPacketizer(coreParams))
   trace_packetizer.io.message <> message_packet_buffer.io.deq

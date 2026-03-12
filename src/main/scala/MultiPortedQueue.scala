@@ -21,7 +21,7 @@ class MultiPortedRegQueue[T <: Data](
     val enqs = Flipped(Vec(numInputs, Decoupled(gen)))
     val deq = Decoupled(gen)
     val stall_enq = Output(Bool())
-    val count = Output(UInt(log2Ceil(numEntries).W))
+    val count = Output(UInt(log2Ceil(numEntries + 1).W))
   })
 
   requireIsChiselType(gen)
@@ -122,7 +122,7 @@ class MultiPortedQueue[T <: Data](
     val enqs = Flipped(Vec(numInputs, Decoupled(gen)))
     val deq = Decoupled(gen)
     val stall_enq = Output(Bool())
-    val count = Output(UInt(log2Ceil(numEntries).W))
+    val count = Output(UInt(log2Ceil(numEntries + 1).W))
   })
 
   if (!useSramQueue) {
@@ -132,17 +132,11 @@ class MultiPortedQueue[T <: Data](
     io.stall_enq := reg_queue.io.stall_enq
     io.count := reg_queue.io.count
   } else {
-    require(numEntries % numInputs == 0, "SRAM queue requires numEntries divisible by numInputs")
-    val sram_queue = Module(new MultiPortedSRAMQueue(gen, numEntries / numInputs, numInputs))
+    val sram_queue = Module(new MultiPortedSRAMQueue(gen, numEntries, numInputs))
     sram_queue.io.enqs <> io.enqs
     io.deq <> sram_queue.io.deq
     io.stall_enq := sram_queue.io.full
-
-    val count_reg = RegInit(0.U(log2Ceil(numEntries + 1).W))
-    val enq_count = PopCount(io.enqs.map(_.fire))
-    val deq_count = io.deq.fire.asUInt
-    count_reg := count_reg + enq_count - deq_count
-    io.count := count_reg
+    io.count := sram_queue.io.count
   }
 }
 
@@ -163,7 +157,7 @@ object MultiPortedQueue {
 */
 class MultiPortedSRAMQueue[T <: Data](
   val gen: T,
-  val depth: Int,
+  val numEntries: Int,
   val numInputs: Int,
 ) extends Module {
 
@@ -173,7 +167,10 @@ class MultiPortedSRAMQueue[T <: Data](
     val enqs = Flipped(Vec(numInputs, Decoupled(gen)))
     val deq = Decoupled(gen)
     val full = Output(Bool()) // essentially enq ready, but deduplicated
+    val count = Output(UInt(log2Ceil(numEntries + 1).W))
   })
+
+  val depth = numEntries / numInputs
 
   require(depth > 0)
   require(numInputs > 0)
@@ -237,9 +234,12 @@ class MultiPortedSRAMQueue[T <: Data](
   }
 
   val next_deq_ptr = Mux(do_deq, wrapAdd(deq_ptr, 1.U), deq_ptr)
-  val entries_after = entries + enq_count - do_deq.asUInt
+  val entries_after = entries +& enq_count -& do_deq.asUInt
   val front_valid_after_deq = front_valid && !do_deq
-  val issue_front_read = entries_after =/= 0.U && !front_valid_after_deq
+  val consumed_from_read_pending = do_deq && !front_valid && read_pending
+  val front_valid_next = (front_valid && !do_deq) || (read_pending && !consumed_from_read_pending)
+  front_valid := front_valid_next
+  val issue_front_read = entries_after =/= 0.U && !front_valid_next
 
   val read_req_bank = bankOf(next_deq_ptr)
   val read_req_row = rowOf(next_deq_ptr)
@@ -256,13 +256,11 @@ class MultiPortedSRAMQueue[T <: Data](
   val read_resp_data = Mux1H(UIntToOH(read_pending_bank, numInputs), bank_read_data)
   val deq_bits = Mux(front_valid, front_data, read_resp_data)
 
-  val consumed_from_read_pending = do_deq && !front_valid && read_pending
   when (read_pending && !consumed_from_read_pending) {
     front_data := read_resp_data
   }
 
-  val front_valid_next = (front_valid && !do_deq) || (read_pending && !consumed_from_read_pending)
-  front_valid := front_valid_next
+
 
   when (do_deq) {
     deq_ptr := wrapAdd(deq_ptr, 1.U)
@@ -283,4 +281,6 @@ class MultiPortedSRAMQueue[T <: Data](
 
   io.deq.bits := deq_bits
   io.deq.valid := deq_valid
+
+  io.count := entries
 }
