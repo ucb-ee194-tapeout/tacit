@@ -8,7 +8,7 @@ import chisel3.util._
 import freechips.rocketchip.trace._
 import org.chipsalliance.cde.config.Parameters
 
-class TacitEncoder(override val coreParams: TraceCoreParams, val bufferDepth: Int, val coreStages: Int, val bpParams: TacitBPParams)(implicit p: Parameters) 
+class TacitEncoder(override val coreParams: TraceCoreParams, val bufferDepth: Int, val coreStages: Int, val bpParams: TacitBPParams, val syncInterval: Int=1000)(implicit p: Parameters) 
     extends LazyTraceEncoder(coreParams)(p) {
   override lazy val module = new TacitEncoderModule(this)
 }
@@ -89,6 +89,10 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
   val bp_hit_packet = Cat(bp_hit_count(5, 0), comp_header)
   comp_packet := Cat(delta_time(5, 0), comp_header)
 
+  // periodic sync
+  val sync_counter = RegInit(0.U(32.W))
+  val periodic_sync_pending = RegInit(false.B)
+
   // packetization of buffered message
   val trace_packetizer = Module(new TracePacketizer(coreParams))
   trace_packetizer.io.target_addr <> target_addr_buffer.io.deq
@@ -105,6 +109,11 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
   io.out.valid := trace_packetizer.io.out.valid
   trace_packetizer.io.out.ready := io.out.ready
 
+  for (i <- 1 until io.out.bits.size) {
+    io.out.bits(i) := 0.U.asTypeOf(io.out.bits(i))
+    io.out.mask(i) := false.B
+  } 
+  
   // intermediate encoder control signals
   val encode_trap_addr_valid = Wire(Bool())
   val encode_target_addr_valid = Wire(Bool())
@@ -197,6 +206,23 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
   bp_hit_count_en := pipeline_advance && io.control.enable
   bp_miss_flag_en := pipeline_advance && io.control.enable
 
+  // periodic sync
+  val sync_ingress_latch = RegInit(0.U.asTypeOf(new TraceCoreInterface(coreParams)))
+  when (pipeline_advance && io.control.enable) {
+    when (sync_counter >= outer.syncInterval.U && outer.syncInterval.U =/= 0.U) {
+      sync_counter          := 0.U
+      periodic_sync_pending := true.B
+       sync_ingress_latch := ingress_1  // save values at trigger time
+    } .otherwise {
+      sync_counter := sync_counter + 1.U
+    }
+  }
+
+  // clear once the packet is accepted into the byte buffer
+  when (byte_buffer.io.enq.fire && periodic_sync_pending) {
+    periodic_sync_pending := false.B
+  }
+
   // default values
   trap_addr_encoder.io.input_value := 0.U
   target_addr_encoder.io.input_value := 0.U
@@ -280,8 +306,7 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
           prev_time := Mux(byte_buffer.io.enq.fire, ingress_1.time, prev_time)
           is_compressed := delta_time <= MAX_DELTA_TIME_COMP.U
           packet_valid := !sent && is_bp_mode
-        }
-        .elsewhen (ingress_1_has_message) {
+        } .elsewhen (ingress_1_has_message) {
           switch (ingress_1.group(ingress_1_msg_idx).itype) {
             is (TraceItype.ITNothing) {
               packet_valid := false.B
@@ -367,6 +392,31 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
               packet_valid := !sent
             }
           }
+        } .elsewhen (periodic_sync_pending) {
+            header_byte := HeaderByte.from_sync_type(FullHeaderType.FSync, SyncType.SyncPeriodic)
+            time_encoder.io.input_value := sync_ingress_latch.time //ingress_1.time
+            prev_time := Mux(byte_buffer.io.enq.fire, sync_ingress_latch.time /*ingress_1.time*/, prev_time)
+            
+            // target address
+            target_addr_encoder.io.input_value := "hC0FFEE".U // TODO: WHAT SHOULD THIS BE
+            encode_target_addr_valid := true.B
+              
+            //prv
+            prv_encoder.io.from_priv := 0b00.U
+            prv_encoder.io.to_priv := sync_ingress_latch.priv //ingress_1.priv 
+            encode_prv_valid := true.B
+            
+            // reuse trap address for runtime config
+            val runtime_cfg = Wire(UInt(7.W))
+            runtime_cfg := "h7F".U(7.W) /* TODO: INSERT DATA HERE*/
+            trap_addr_encoder.io.input_value := runtime_cfg 
+            encode_trap_addr_valid := true.B
+            
+            //context
+            ctx_encoder.io.input_value := sync_ingress_latch.ctx //ingress_1.ctx
+            encode_ctx_valid := true.B
+            is_compressed := false.B 
+            packet_valid := !sent
         }
       }
     }
