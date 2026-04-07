@@ -211,7 +211,7 @@ class WithTraceSinkDMA(targetId: Int = 1) extends Config((site, here, up) => {
             beatBytes = xBytes), hartId = tp.tileParams.tileId)(p)), targetId)))))
       )
     }
-    case tp: boom.v3.common.BoomTileAttachParams => {
+    /*case tp: boom.v3.common.BoomTileAttachParams => {
       val xBytes = tp.tileParams.core.xLen / 8
       tp.copy(tileParams = tp.tileParams.copy(
         traceParams = Some(tp.tileParams.traceParams.get.copy(buildSinks = 
@@ -230,7 +230,7 @@ class WithTraceSinkDMA(targetId: Int = 1) extends Config((site, here, up) => {
             regNodeBaseAddr = 0x3010000 + tp.tileParams.tileId * 0x1000,
             beatBytes = xBytes), hartId = tp.tileParams.tileId)(p)), targetId)))))
       )
-    }
+    }*/
     case other => other
   }
   case SubsystemInjectorKey => up(SubsystemInjectorKey) + TraceSinkDMAInjector
@@ -259,7 +259,7 @@ case object TraceSinkDMAInjector extends SubsystemInjector((p, baseSubsystem) =>
       } else {
         None
       }
-    case b3: boom.v3.common.BoomTile =>
+    /*case b3: boom.v3.common.BoomTile =>
       val traceSinkDmas = b3.trace_sinks.collect { case dma: TraceSinkDMA => dma }
       if (b3.trace_encoder_controller.isDefined || traceSinkDmas.nonEmpty) {
         require(b3.trace_encoder_controller.isDefined, s"tile ${b3.tileId} has trace DMA sink but no trace encoder controller")
@@ -276,7 +276,7 @@ case object TraceSinkDMAInjector extends SubsystemInjector((p, baseSubsystem) =>
         Some((b4, b4.trace_encoder_controller.get, traceSinkDmas.head))
       } else {
         None
-      }
+      }*/
     case _ => None
   }
   if (traceEncoderDmaBindings.nonEmpty) {

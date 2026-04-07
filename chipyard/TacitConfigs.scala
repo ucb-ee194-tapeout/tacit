@@ -42,7 +42,7 @@ class WithTacitEncoder extends Config((site, here, up) => {
         useArbiterMonitor = false
       )),
       core = tp.tileParams.core.copy(enableTraceCoreIngress = true)))
-    case tp: boom.v3.common.BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(
+    /*case tp: boom.v3.common.BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(
       traceParams = Some(TraceEncoderParams(
         encoderBaseAddr = 0x3000000 + tp.tileParams.tileId * 0x1000,
         buildEncoder = (p: Parameters) => LazyModule(new TacitParallelEncoder(new TraceCoreParams(
@@ -71,7 +71,7 @@ class WithTacitEncoder extends Config((site, here, up) => {
         )(p)),
         useArbiterMonitor = false
       )),
-      core = tp.tileParams.core.copy(enableTraceCoreIngress = true)))
+      core = tp.tileParams.core.copy(enableTraceCoreIngress = true)))*/
   }
 })
 
@@ -114,7 +114,7 @@ class TacitRocketRawByteConfig extends Config(
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
   new freechips.rocketchip.subsystem.WithoutTLMonitors ++
-  new chipyard.config.WithAsidLen(16) ++
+  //new chipyard.config.WithAsidLen(16) ++
   new freechips.rocketchip.rocket.WithL1DCacheNonblocking(2) ++     // non-blocking L1D$, L1 prefetching only works with non-blocking L1D$
   new freechips.rocketchip.rocket.WithNHugeCores(1) ++
   new chipyard.config.AbstractConfig)
@@ -129,8 +129,8 @@ class TacitRocketNoPTERawByteConfig extends Config(
   new chipyard.WithTacitEncoder ++
   // system configs
   new freechips.rocketchip.subsystem.WithoutTLMonitors ++
-  new chipyard.config.WithPTECacheEntries(0) ++
-  new chipyard.config.WithAsidLen(16) ++
+  //new chipyard.config.WithPTECacheEntries(0) ++
+  //new chipyard.config.WithAsidLen(16) ++
   new freechips.rocketchip.rocket.WithNHugeCores(1) ++
   new chipyard.config.AbstractConfig)
 
@@ -142,7 +142,7 @@ class TacitRocketRawBytePrefetchConfig extends Config(
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
   new freechips.rocketchip.subsystem.WithoutTLMonitors ++
-  new chipyard.config.WithAsidLen(16) ++
+  //new chipyard.config.WithAsidLen(16) ++
   new freechips.rocketchip.rocket.WithL1DCacheNonblocking(8) ++     // non-blocking L1D$, L1 prefetching only works with non-blocking L1D$
   new freechips.rocketchip.rocket.WithNHugeCores(1) ++
   new chipyard.config.AbstractConfig)
@@ -154,7 +154,7 @@ class TacitDualRocketRawByteConfig extends Config(
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
   new freechips.rocketchip.subsystem.WithoutTLMonitors ++
-  new chipyard.config.WithAsidLen(16) ++
+  //new chipyard.config.WithAsidLen(16) ++
   new freechips.rocketchip.rocket.WithNHugeCores(2) ++
   new chipyard.config.AbstractConfig)
 
@@ -165,7 +165,7 @@ class TacitMediumBoomV3RawByteConfig extends Config(
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
   new freechips.rocketchip.subsystem.WithoutTLMonitors ++
-  new chipyard.config.WithAsidLen(16) ++
+  //new chipyard.config.WithAsidLen(16) ++
   new boom.v3.common.WithNMediumBooms(1) ++
   new chipyard.config.WithSystemBusWidth(128) ++
   new chipyard.config.AbstractConfig)
@@ -177,7 +177,7 @@ class TacitLargeBoomV3RawByteConfig extends Config(
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
   // new freechips.rocketchip.subsystem.WithoutTLMonitors ++
-  new chipyard.config.WithAsidLen(16) ++
+  //new chipyard.config.WithAsidLen(16) ++
   new boom.v3.common.WithNLargeBooms(1) ++
   new chipyard.config.WithSystemBusWidth(128) ++
   new chipyard.config.AbstractConfig)
@@ -188,8 +188,8 @@ class TacitMegaBoomV3RawByteConfig extends Config(
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
-  // new freechips.rocketchip.subsystem.WithoutTLMonitors ++
-  new chipyard.config.WithAsidLen(16) ++
+  new freechips.rocketchip.subsystem.WithoutTLMonitors ++
+  //new chipyard.config.WithAsidLen(16) ++
   new boom.v3.common.WithNMegaBooms(1) ++
   new chipyard.config.WithSystemBusWidth(128) ++
   new chipyard.config.AbstractConfig)
@@ -223,7 +223,7 @@ class TacitLargeBoomV4RawByteConfig extends Config(
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
-  new chipyard.config.WithAsidLen(16) ++
+  //new chipyard.config.WithAsidLen(16) ++
   new freechips.rocketchip.subsystem.WithoutTLMonitors ++
   new boom.v4.common.WithNLargeBooms(1) ++
   new chipyard.config.WithSystemBusWidth(128) ++
@@ -246,7 +246,7 @@ class TacitMediumBoomV4RawByteConfig extends Config(
   new tacit.WithTraceSinkAlways(0) ++
   new chipyard.config.WithTraceArbiterMonitor ++
   new chipyard.WithTacitEncoder ++
-  new chipyard.config.WithAsidLen(16) ++
+  //new chipyard.config.WithAsidLen(16) ++
   new freechips.rocketchip.subsystem.WithoutTLMonitors ++
   new boom.v4.common.WithNMediumBooms(1) ++
   new chipyard.config.WithSystemBusWidth(128) ++
