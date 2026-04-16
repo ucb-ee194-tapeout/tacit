@@ -6,90 +6,9 @@ package tacit
 import chisel3._
 import chisel3.util._
 import freechips.rocketchip.trace._
-
 import org.chipsalliance.cde.config.Parameters
 
-object FullHeaderType extends ChiselEnum {
-  val FTakenBranch    = Value(0x0.U) // 000
-  val FNotTakenBranch = Value(0x1.U) // 001
-  val FUninfJump      = Value(0x2.U) // 010
-  val FInfJump        = Value(0x3.U) // 011
-  val FTrap           = Value(0x4.U) // 100
-  val FSync           = Value(0x5.U) // 101
-  val FValue          = Value(0x6.U) // 110
-  val FReserved       = Value(0x7.U) // 111
-}
-
-object CompressedHeaderType extends ChiselEnum {
-  val CTB = Value(0x0.U) // 00, taken branch
-  val CNT = Value(0x1.U) // 01, not taken branch
-  val CNA = Value(0x2.U) // 10, not a compressed packet
-  val CIJ = Value(0x3.U) // 11, is a jump
-}
-
-object TrapType extends ChiselEnum {
-  val TNone      = Value(0x0.U)
-  val TException = Value(0x1.U)
-  val TInterrupt = Value(0x2.U)
-  val TReturn    = Value(0x4.U)
-}
-
-object SyncType extends ChiselEnum {
-  val SyncNone = Value(0b000.U)
-  val SyncStart = Value(0b001.U)
-  val SyncPeriodic = Value(0b010.U)
-  val SyncEnd = Value(0b011.U)
-}
-
-object HeaderByte {
-  def from_trap_type(header_type: FullHeaderType.Type, trap_type: TrapType.Type): UInt = {
-    Cat(
-      trap_type.asUInt,
-      header_type.asUInt,
-      CompressedHeaderType.CNA.asUInt
-    )
-  }
-
-  def from_sync_type(header_type: FullHeaderType.Type, sync_type: SyncType.Type): UInt = {
-    Cat(
-      sync_type.asUInt,
-      header_type.asUInt,
-      CompressedHeaderType.CNA.asUInt
-    )
-  }
-
-  def apply(header_type: FullHeaderType.Type): UInt = {
-    Cat(
-      0.U(3.W),
-      header_type.asUInt,
-      CompressedHeaderType.CNA.asUInt
-    )
-  }
-}
-
-trait MetaDataWidthHelper {
-  // abstract parameter
-  val coreParams: TraceCoreParams
-  def getMaxNumBytes(width: Int): Int = { width/(8-1) + 1 }
-  lazy val maxASIdBits = coreParams.xlen match {
-    case 32 => 9
-    case 64 => 16
-  }
-  lazy val addrMaxNumBytes = getMaxNumBytes(coreParams.iaddrWidth)
-  lazy val timeMaxNumBytes = getMaxNumBytes(coreParams.xlen)
-  lazy val ctxMaxNumBytes = getMaxNumBytes(maxASIdBits)
-}
-
-class MetaDataBundle(val coreParams: TraceCoreParams) extends Bundle with MetaDataWidthHelper {
-  val prv = UInt(1.W)
-  val ctx = UInt(ctxMaxNumBytes.W)
-  val target_addr = UInt(addrMaxNumBytes.W)
-  val trap_addr = UInt(addrMaxNumBytes.W)
-  val time = UInt(timeMaxNumBytes.W)
-  val is_compressed = UInt(1.W)
-}
-
-class TacitEncoder(override val coreParams: TraceCoreParams, val bufferDepth: Int, val coreStages: Int, val bpParams: TacitBPParams)(implicit p: Parameters) 
+class TacitEncoder(override val coreParams: TraceCoreParams, val bufferDepth: Int, val coreStages: Int, val bpParams: TacitBPParams, val syncInterval: Int=1000)(implicit p: Parameters) 
     extends LazyTraceEncoder(coreParams)(p) {
   override lazy val module = new TacitEncoderModule(this)
 }
@@ -170,6 +89,10 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
   val bp_hit_packet = Cat(bp_hit_count(5, 0), comp_header)
   comp_packet := Cat(delta_time(5, 0), comp_header)
 
+  // periodic sync
+  val sync_counter = RegInit(0.U(32.W))
+  val periodic_sync_pending = RegInit(false.B)
+
   // packetization of buffered message
   val trace_packetizer = Module(new TracePacketizer(coreParams))
   trace_packetizer.io.target_addr <> target_addr_buffer.io.deq
@@ -179,8 +102,18 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
   trace_packetizer.io.metadata <> metadata_buffer.io.deq
   trace_packetizer.io.prv <> prv_buffer.io.deq
   trace_packetizer.io.ctx <> ctx_buffer.io.deq
-  trace_packetizer.io.out <> io.out
 
+  // low performance compliance, only use one lane
+  io.out.bits(0) := trace_packetizer.io.out.bits
+  io.out.mask(0) := trace_packetizer.io.out.valid
+  io.out.valid := trace_packetizer.io.out.valid
+  trace_packetizer.io.out.ready := io.out.ready
+
+  for (i <- 1 until io.out.bits.size) {
+    io.out.bits(i) := 0.U.asTypeOf(io.out.bits(i))
+    io.out.mask(i) := false.B
+  } 
+  
   // intermediate encoder control signals
   val encode_trap_addr_valid = Wire(Bool())
   val encode_target_addr_valid = Wire(Bool())
@@ -194,7 +127,7 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
   metadata.trap_addr := trap_addr_encoder.io.output_num_bytes
   metadata.target_addr := target_addr_encoder.io.output_num_bytes
   metadata.time := time_encoder.io.output_num_bytes
-  metadata.is_compressed := is_compressed
+  metadata.is_full := ~is_compressed
 
   metadata_buffer.io.enq.bits := metadata
   metadata_buffer.io.enq.valid := packet_valid
@@ -273,6 +206,23 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
   bp_hit_count_en := pipeline_advance && io.control.enable
   bp_miss_flag_en := pipeline_advance && io.control.enable
 
+  // periodic sync
+  val sync_ingress_latch = RegInit(0.U.asTypeOf(new TraceCoreInterface(coreParams)))
+  when (pipeline_advance && io.control.enable) {
+    when (sync_counter >= outer.syncInterval.U && outer.syncInterval.U =/= 0.U) {
+      sync_counter          := 0.U
+      periodic_sync_pending := true.B
+       sync_ingress_latch := ingress_1  // save values at trigger time
+    } .otherwise {
+      sync_counter := sync_counter + 1.U
+    }
+  }
+
+  // clear once the packet is accepted into the byte buffer
+  when (byte_buffer.io.enq.fire && periodic_sync_pending) {
+    periodic_sync_pending := false.B
+  }
+
   // default values
   trap_addr_encoder.io.input_value := 0.U
   target_addr_encoder.io.input_value := 0.U
@@ -312,7 +262,7 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
       // 2 bits for bp mode, 6 bits for n_entries
       runtime_cfg := Cat(log2Ceil(outer.bpParams.n_entries/64).U, io.control.bp_mode(1,0))
       trap_addr_encoder.io.input_value := runtime_cfg
-      encode_trap_addr_valid := sync_type === SyncType.SyncStart
+      encode_trap_addr_valid := true.B
       // context
       ctx_encoder.io.input_value := ingress_0.ctx
       encode_ctx_valid := true.B
@@ -356,8 +306,7 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
           prev_time := Mux(byte_buffer.io.enq.fire, ingress_1.time, prev_time)
           is_compressed := delta_time <= MAX_DELTA_TIME_COMP.U
           packet_valid := !sent && is_bp_mode
-        }
-        .elsewhen (ingress_1_has_message) {
+        } .elsewhen (ingress_1_has_message) {
           switch (ingress_1.group(ingress_1_msg_idx).itype) {
             is (TraceItype.ITNothing) {
               packet_valid := false.B
@@ -443,6 +392,31 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
               packet_valid := !sent
             }
           }
+        } .elsewhen (periodic_sync_pending) {
+            header_byte := HeaderByte.from_sync_type(FullHeaderType.FSync, SyncType.SyncPeriodic)
+            time_encoder.io.input_value := sync_ingress_latch.time //ingress_1.time
+            prev_time := Mux(byte_buffer.io.enq.fire, sync_ingress_latch.time /*ingress_1.time*/, prev_time)
+            
+            // target address
+            target_addr_encoder.io.input_value := "hC0FFEE".U // TODO: WHAT SHOULD THIS BE
+            encode_target_addr_valid := true.B
+              
+            //prv
+            prv_encoder.io.from_priv := 0b00.U
+            prv_encoder.io.to_priv := sync_ingress_latch.priv //ingress_1.priv 
+            encode_prv_valid := true.B
+            
+            // reuse trap address for runtime config
+            val runtime_cfg = Wire(UInt(7.W))
+            runtime_cfg := "h7F".U(7.W) /* TODO: INSERT DATA HERE*/
+            trap_addr_encoder.io.input_value := runtime_cfg 
+            encode_trap_addr_valid := true.B
+            
+            //context
+            ctx_encoder.io.input_value := sync_ingress_latch.ctx //ingress_1.ctx
+            encode_ctx_valid := true.B
+            is_compressed := false.B 
+            packet_valid := !sent
         }
       }
     }
