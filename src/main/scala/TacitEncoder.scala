@@ -8,7 +8,7 @@ import chisel3.util._
 import freechips.rocketchip.trace._
 import org.chipsalliance.cde.config.Parameters
 
-class TacitEncoder(override val coreParams: TraceCoreParams, val bufferDepth: Int, val coreStages: Int, val bpParams: TacitBPParams, val syncInterval: Int=1000)(implicit p: Parameters) 
+class TacitEncoder(override val coreParams: TraceCoreParams, val bufferDepth: Int, val coreStages: Int, val bpParams: TacitBPParams, val syncInterval: Int=10000000)(implicit p: Parameters) 
     extends LazyTraceEncoder(coreParams)(p) {
   override lazy val module = new TacitEncoderModule(this)
 }
