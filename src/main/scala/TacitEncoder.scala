@@ -8,7 +8,7 @@ import chisel3.util._
 import freechips.rocketchip.trace._
 import org.chipsalliance.cde.config.Parameters
 
-class TacitEncoder(override val coreParams: TraceCoreParams, val bufferDepth: Int, val coreStages: Int, val bpParams: TacitBPParams, val syncInterval: Int=10000000)(implicit p: Parameters) 
+class TacitEncoder(override val coreParams: TraceCoreParams, val bufferDepth: Int, val coreStages: Int, val bpParams: TacitBPParams)(implicit p: Parameters) 
     extends LazyTraceEncoder(coreParams)(p) {
   override lazy val module = new TacitEncoderModule(this)
 }
@@ -207,12 +207,10 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
   bp_miss_flag_en := pipeline_advance && io.control.enable
 
   // periodic sync
-  val sync_ingress_latch = RegInit(0.U.asTypeOf(new TraceCoreInterface(coreParams)))
   when (pipeline_advance && io.control.enable) {
-    when (sync_counter >= outer.syncInterval.U && outer.syncInterval.U =/= 0.U) {
+    when (sync_counter >= io.control.sync_interval && io.control.sync_interval =/= 0.U) {
       sync_counter          := 0.U
       periodic_sync_pending := true.B
-       sync_ingress_latch := ingress_1  // save values at trigger time
     } .otherwise {
       sync_counter := sync_counter + 1.U
     }
@@ -394,8 +392,8 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
           }
         } .elsewhen (periodic_sync_pending) {
             header_byte := HeaderByte.from_sync_type(FullHeaderType.FSync, SyncType.SyncPeriodic)
-            time_encoder.io.input_value := sync_ingress_latch.time //ingress_1.time
-            prev_time := Mux(byte_buffer.io.enq.fire, sync_ingress_latch.time /*ingress_1.time*/, prev_time)
+            time_encoder.io.input_value := ingress_1.time
+            prev_time := Mux(byte_buffer.io.enq.fire, ingress_1.time, prev_time)
             
             // target address
             target_addr_encoder.io.input_value := "hC0FFEE".U // TODO: WHAT SHOULD THIS BE
@@ -403,7 +401,7 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
               
             //prv
             prv_encoder.io.from_priv := 0b00.U
-            prv_encoder.io.to_priv := sync_ingress_latch.priv //ingress_1.priv 
+            prv_encoder.io.to_priv := ingress_1.priv 
             encode_prv_valid := true.B
             
             // reuse trap address for runtime config
@@ -413,7 +411,7 @@ class TacitEncoderModule(outer: TacitEncoder) extends LazyTraceEncoderModule(out
             encode_trap_addr_valid := true.B
             
             //context
-            ctx_encoder.io.input_value := sync_ingress_latch.ctx //ingress_1.ctx
+            ctx_encoder.io.input_value := ingress_1.ctx
             encode_ctx_valid := true.B
             is_compressed := false.B 
             packet_valid := !sent
